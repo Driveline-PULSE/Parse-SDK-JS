@@ -1355,7 +1355,7 @@ export default class ParseObject {
       saveOptions.sessionToken = options.sessionToken;
     }
     if (options.hasOwnProperty('batchSize')) {
-      destroyOptions.batchSize = options.batchSize;
+      saveOptions.batchSize = options.batchSize;
     }
     return CoreManager.getObjectController().save(
       list,
