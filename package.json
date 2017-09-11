@@ -57,9 +57,9 @@
   },
   "scripts": {
     "build": "./build_releases.sh",
-    "release": "./build_releases.sh && npm publish",
+    "release": "./build_releases.sh",
     "test": "PARSE_BUILD=node jest",
-    "prepublish": "npm run release"
+    "prepublish": "./build_releases.sh"
   },
   "jest": {
     "automock": true,
