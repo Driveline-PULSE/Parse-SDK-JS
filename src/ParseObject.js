@@ -1309,6 +1309,9 @@ export default class ParseObject {
     if (options.hasOwnProperty('sessionToken')) {
       destroyOptions.sessionToken = options.sessionToken;
     }
+    if (options.hasOwnProperty('batchSize')) {
+      destroyOptions.batchSize = options.batchSize;
+    }
     return CoreManager.getObjectController().destroy(
       list,
       destroyOptions
@@ -1350,6 +1353,9 @@ export default class ParseObject {
     }
     if (options.hasOwnProperty('sessionToken')) {
       saveOptions.sessionToken = options.sessionToken;
+    }
+    if (options.hasOwnProperty('batchSize')) {
+      destroyOptions.batchSize = options.batchSize;
     }
     return CoreManager.getObjectController().save(
       list,
@@ -1690,6 +1696,7 @@ var DefaultController = {
 
   destroy(target: ParseObject | Array<ParseObject>, options: RequestOptions): ParsePromise {
     var RESTController = CoreManager.getRESTController();
+    var batchSize = options.batchSize || 20;
     if (Array.isArray(target)) {
       if (target.length < 1) {
         return ParsePromise.as([]);
@@ -1758,6 +1765,7 @@ var DefaultController = {
 
   save(target: ParseObject | Array<ParseObject | ParseFile>, options: RequestOptions) {
     var RESTController = CoreManager.getRESTController();
+    var batchSize = options.batchSize || 20;
     var stateController = CoreManager.getObjectStateController();
     if (Array.isArray(target)) {
       if (target.length < 1) {
@@ -1792,7 +1800,7 @@ var DefaultController = {
           var batch = [];
           var nextPending = [];
           pending.forEach((el) => {
-            if (batch.length < 20 && canBeSerialized(el)) {
+            if (batch.length < batchSize && canBeSerialized(el)) {
               batch.push(el);
             } else {
               nextPending.push(el);
