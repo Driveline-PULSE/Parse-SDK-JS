@@ -146,6 +146,7 @@ const RESTController = {
 
   request(method: string, path: string, data: mixed, options?: RequestOptions) {
     options = options || {};
+    let date = new Date();
     var url = CoreManager.get('SERVER_URL');
     if (url[url.length - 1] !== '/') {
       url += '/';
@@ -217,8 +218,12 @@ const RESTController = {
       }
 
       var payloadString = JSON.stringify(payload);
-
-      return RESTController.ajax(method, url, payloadString);
+      return RESTController.ajax(method, url, payloadString).then((results)=> {
+        if (Logger && Logger.PARSE_REST_CALLS) {
+          Logger.log(Logger.PARSE_REST_CALLS, method + "::" + path + " took: " + (new Date().getTime() - date.getTime()) + "ms");
+        }
+        return results;
+      });
     }).then(null, function(response: { responseText: string }) {
       // Transform the error into an instance of ParseError by trying to parse
       // the error string as JSON
