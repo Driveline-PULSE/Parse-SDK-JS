@@ -80,7 +80,8 @@
     "build": "./build_releases.sh",
     "release": "./build_releases.sh",
     "test": "PARSE_BUILD=node jest",
-    "prepublish": "./build_releases.sh"
+    "prepublish": "./build_releases.sh",
+    "prepare": "./build_releases.sh"
   },
   "jest": {
     "automock": true,
