@@ -219,7 +219,7 @@ const RESTController = {
 
       var payloadString = JSON.stringify(payload);
       return RESTController.ajax(method, url, payloadString).then((results)=> {
-        if (Logger && Logger.PARSE_REST_CALLS) {
+        if (typeof Logger !== undefined && typeof Logger.PARSE_REST_CALLS !== undefined) {
           Logger.log(Logger.PARSE_REST_CALLS, method + "::" + path + " " + payloadString + " took: " + (new Date().getTime() - date.getTime()) + "ms");
         }
         return results;
