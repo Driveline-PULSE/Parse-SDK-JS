@@ -150,6 +150,10 @@ export default class ParseObject {
     return Object.freeze(stateController.estimateAttributes(this._getStateIdentifier()));
   }
 
+  _getAttribute(attr: string): any {
+    let stateController = CoreManager.getObjectStateController();
+    return Object.freeze(stateController.estimateAttribute(this._getStateIdentifier()));
+  }
   /**
    * The first time this object was saved on the server.
    * @property createdAt
@@ -526,7 +530,7 @@ export default class ParseObject {
    * @param {String} attr The string name of an attribute.
    */
   get(attr: string): mixed {
-    return this.attributes[attr];
+    return this._getAttribute(attr);
   }
 
   /**
@@ -574,11 +578,8 @@ export default class ParseObject {
    * @return {Boolean}
    */
   has(attr: string): boolean {
-    var attributes = this.attributes;
-    if (attributes.hasOwnProperty(attr)) {
-      return attributes[attr] != null;
-    }
-    return false;
+    var attribute = this._getAttribute(attr);
+    return attribute != null;
   }
 
   /**
