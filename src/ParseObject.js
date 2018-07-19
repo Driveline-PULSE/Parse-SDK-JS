@@ -152,7 +152,7 @@ export default class ParseObject {
 
   _getAttribute(attr: string): any {
     let stateController = CoreManager.getObjectStateController();
-    return Object.freeze(stateController.estimateAttribute(this._getStateIdentifier(), attr));
+    return stateController.estimateAttribute(this._getStateIdentifier(), attr);
   }
   /**
    * The first time this object was saved on the server.
