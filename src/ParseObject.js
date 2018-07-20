@@ -156,7 +156,7 @@ export default class ParseObject {
     const stateController = CoreManager.getObjectStateController();
     const stateIdentifier = this._getStateIdentifier();
     attributes.forEach((attr) => {
-      result[attribute] = stateController.estimateAttribute(stateIdentifier, attr);
+      result[attr] = stateController.estimateAttribute(stateIdentifier, attr);
     })
     
     return Object.freeze(result);
