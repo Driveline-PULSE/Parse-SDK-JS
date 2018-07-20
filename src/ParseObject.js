@@ -674,7 +674,7 @@ export default class ParseObject {
     }
 
     // Calculate new values
-    var currentAttributes = this._getAttribute(Object.keys(changes));
+    var currentAttributes = this._getAttributes(Object.keys(changes));
     var newValues = {};
     for (var attr in newOps) {
       if (newOps[attr] instanceof RelationOp) {
