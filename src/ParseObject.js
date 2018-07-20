@@ -150,6 +150,18 @@ export default class ParseObject {
     return Object.freeze(stateController.estimateAttributes(this._getStateIdentifier()));
   }
 
+  _getAttributes(attributes: Array<string>): AttributeMap {
+    const result = {}:
+
+    const stateController = CoreManager.getObjectStateController();
+    const stateIdentifier = this._getStateIdentifier();
+    attributes.forEach((attr) => {
+      result[attribute] = stateController.estimateAttribute(stateIdentifier, attr);
+    })
+    
+    return Object.freeze(result);
+  }
+
   _getAttribute(attr: string): any {
     let stateController = CoreManager.getObjectStateController();
     return stateController.estimateAttribute(this._getStateIdentifier(), attr);
@@ -662,7 +674,7 @@ export default class ParseObject {
     }
 
     // Calculate new values
-    var currentAttributes = this.attributes;
+    var currentAttributes = this._getAttribute(Object.keys(changes));
     var newValues = {};
     for (var attr in newOps) {
       if (newOps[attr] instanceof RelationOp) {
