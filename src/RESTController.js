@@ -153,6 +153,7 @@ const RESTController = {
 
   request(method: string, path: string, data: mixed, options?: RequestOptions) {
     options = options || {};
+    let date = new Date();
     var url = CoreManager.get('SERVER_URL');
     if (url[url.length - 1] !== '/') {
       url += '/';
@@ -226,6 +227,9 @@ const RESTController = {
       var payloadString = JSON.stringify(payload);
 
       return RESTController.ajax(method, url, payloadString).then(({ response }) => {
+        if (typeof Logger !== 'undefined' && typeof Logger.PARSE_REST_CALLS !== 'undefined') {
+          Logger.log(Logger.PARSE_REST_CALLS, method + "::" + path + " " + payloadString + " took: " + (new Date().getTime() - date.getTime()) + "ms");
+        }
         return response;
       });
     }).catch(function(response: { responseText: string }) {

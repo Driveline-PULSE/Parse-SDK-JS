@@ -151,6 +151,22 @@ class ParseObject {
     return Object.freeze(stateController.estimateAttributes(this._getStateIdentifier()));
   }
 
+  _getAttributes(attributes: Array<string>): AttributeMap {
+    const result = {};
+
+    const stateController = CoreManager.getObjectStateController();
+    const stateIdentifier = this._getStateIdentifier();
+    attributes.forEach((attr) => {
+      result[attr] = stateController.estimateAttribute(stateIdentifier, attr);
+    })
+    
+    return Object.freeze(result);
+  }
+
+  _getAttribute(attr: string): any {
+    let stateController = CoreManager.getObjectStateController();
+    return stateController.estimateAttribute(this._getStateIdentifier(), attr);
+  }
   /**
    * The first time this object was saved on the server.
    * @property createdAt
@@ -521,7 +537,7 @@ class ParseObject {
    * @param {String} attr The string name of an attribute.
    */
   get(attr: string): mixed {
-    return this.attributes[attr];
+    return this._getAttribute(attr);
   }
 
   /**
@@ -566,11 +582,8 @@ class ParseObject {
    * @return {Boolean}
    */
   has(attr: string): boolean {
-    var attributes = this.attributes;
-    if (attributes.hasOwnProperty(attr)) {
-      return attributes[attr] != null;
-    }
-    return false;
+    var attribute = this._getAttribute(attr);
+    return attribute != null;
   }
 
   /**
@@ -652,7 +665,7 @@ class ParseObject {
     }
 
     // Calculate new values
-    var currentAttributes = this.attributes;
+    var currentAttributes = this._getAttributes(Object.keys(changes));
     var newValues = {};
     for (var attr in newOps) {
       if (newOps[attr] instanceof RelationOp) {
@@ -1335,6 +1348,9 @@ class ParseObject {
     if (options.hasOwnProperty('sessionToken')) {
       destroyOptions.sessionToken = options.sessionToken;
     }
+    if (options.hasOwnProperty('batchSize')) {
+      destroyOptions.batchSize = options.batchSize;
+    }
     return CoreManager.getObjectController().destroy(
       list,
       destroyOptions
@@ -1371,6 +1387,9 @@ class ParseObject {
     }
     if (options.hasOwnProperty('sessionToken')) {
       saveOptions.sessionToken = options.sessionToken;
+    }
+    if (options.hasOwnProperty('batchSize')) {
+      saveOptions.batchSize = options.batchSize;
     }
     return CoreManager.getObjectController().save(
       list,
@@ -1714,6 +1733,7 @@ var DefaultController = {
 
   destroy(target: ParseObject | Array<ParseObject>, options: RequestOptions): Promise {
     var RESTController = CoreManager.getRESTController();
+    var batchSize = options.batchSize || 20;
     if (Array.isArray(target)) {
       if (target.length < 1) {
         return Promise.resolve([]);
@@ -1781,6 +1801,7 @@ var DefaultController = {
 
   save(target: ParseObject | Array<ParseObject | ParseFile>, options: RequestOptions) {
     var RESTController = CoreManager.getRESTController();
+    var batchSize = options.batchSize || 20;
     var stateController = CoreManager.getObjectStateController();
     if (Array.isArray(target)) {
       if (target.length < 1) {
@@ -1815,7 +1836,7 @@ var DefaultController = {
           var batch = [];
           var nextPending = [];
           pending.forEach((el) => {
-            if (batch.length < 20 && canBeSerialized(el)) {
+            if (batch.length < batchSize && canBeSerialized(el)) {
               batch.push(el);
             } else {
               nextPending.push(el);
