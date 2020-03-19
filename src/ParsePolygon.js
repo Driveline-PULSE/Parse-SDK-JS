@@ -17,8 +17,6 @@ import ParseGeoPoint from './ParseGeoPoint';
  *   new Polygon([[0,0],[0,1],[1,1],[1,0]])
  *   new Polygon([GeoPoint, GeoPoint, GeoPoint])
  *   </pre>
- * @class Parse.GeoPoint
- * @constructor
  *
  * <p>Represents a coordinates that may be associated
  * with a key in a ParseObject or used as a reference point for geo queries.
@@ -29,12 +27,16 @@ import ParseGeoPoint from './ParseGeoPoint';
  *   var object = new Parse.Object("PlaceObject");
  *   object.set("area", polygon);
  *   object.save();</pre></p>
+ * @alias Parse.Polygon
  */
-export default class ParsePolygon {
-  _coordinates: Array;
+class ParsePolygon {
+  _coordinates: Array<Array<number>>;
 
+  /**
+   * @param {(Number[][]|Parse.GeoPoint[])} coordinates An Array of coordinate pairs
+   */
   constructor(
-    arg1: Array,
+    arg1: Array<Array<number>> | Array<ParseGeoPoint>,
   ) {
     this._coordinates = ParsePolygon._validate(arg1);
   }
@@ -45,20 +47,19 @@ export default class ParsePolygon {
    * @property coordinates
    * @type Array
    */
-  get coordinates(): Array {
+  get coordinates(): Array<Array<number>> {
     return this._coordinates;
   }
 
-  set coordinates(coords: Array) {
+  set coordinates(coords: Array<Array<number>> | Array<ParseGeoPoint>) {
     this._coordinates = ParsePolygon._validate(coords);
   }
 
   /**
-   * Returns a JSON representation of the GeoPoint, suitable for Parse.
-   * @method toJSON
+   * Returns a JSON representation of the Polygon, suitable for Parse.
    * @return {Object}
    */
-  toJSON(): { __type: string; coordinates: Array;} {
+  toJSON(): { __type: string; coordinates: Array<Array<number>>;} {
     ParsePolygon._validate(this._coordinates);
     return {
       __type: 'Polygon',
@@ -66,6 +67,11 @@ export default class ParsePolygon {
     };
   }
 
+  /**
+   * Checks if two polygons are equal
+   * @param {(Parse.Polygon|Object)} other
+   * @returns {Boolean}
+   */
   equals(other: mixed): boolean {
     if (!(other instanceof ParsePolygon) || (this.coordinates.length !== other.coordinates.length)) {
       return false;
@@ -82,6 +88,11 @@ export default class ParsePolygon {
     return isEqual;
   }
 
+  /**
+   *
+   * @param {Parse.GeoPoint} point
+   * @returns {Boolean} Returns if the point is contained in the polygon
+   */
   containsPoint(point: ParseGeoPoint): boolean {
     let minX = this._coordinates[0][0];
     let maxX = this._coordinates[0][0];
@@ -89,40 +100,41 @@ export default class ParsePolygon {
     let maxY = this._coordinates[0][1];
 
     for (let i = 1; i < this._coordinates.length; i += 1) {
-        const p = this._coordinates[i];
-        minX = Math.min(p[0], minX);
-        maxX = Math.max(p[0], maxX);
-        minY = Math.min(p[1], minY);
-        maxY = Math.max(p[1], maxY);
+      const p = this._coordinates[i];
+      minX = Math.min(p[0], minX);
+      maxX = Math.max(p[0], maxX);
+      minY = Math.min(p[1], minY);
+      maxY = Math.max(p[1], maxY);
     }
 
     const outside = (point.latitude < minX || point.latitude > maxX || point.longitude < minY || point.longitude > maxY);
     if (outside) {
-        return false;
+      return false;
     }
 
     let inside = false;
     for (let i = 0, j = this._coordinates.length - 1 ; i < this._coordinates.length; j = i++) {
-      let startX = this._coordinates[i][0];
-      let startY = this._coordinates[i][1];
-      let endX = this._coordinates[j][0];
-      let endY = this._coordinates[j][1];
+      const startX = this._coordinates[i][0];
+      const startY = this._coordinates[i][1];
+      const endX = this._coordinates[j][0];
+      const endY = this._coordinates[j][1];
 
-      const intersect = (( startY > point.longitude ) != ( endY > point.longitude ) &&
-          point.latitude < ( endX - startX ) * ( point.longitude - startY ) / ( endY - startY ) + startX);
+      const intersect = ((startY > point.longitude) != (endY > point.longitude) &&
+          point.latitude < (endX - startX) * (point.longitude - startY) / (endY - startY) + startX);
 
       if (intersect) {
-          inside = !inside;
+        inside = !inside;
       }
     }
     return inside;
   }
 
   /**
-   * Throws an exception if the given lat-long is out of bounds.
-   * @return {Array}
+   * Validates that the list of coordinates can form a valid polygon
+   * @param {Array} coords the list of coordinated to validate as a polygon
+   * @throws {TypeError}
    */
-  static _validate(coords: Array) {
+  static _validate(coords: Array<Array<number>> | Array<ParseGeoPoint>): Array<Array<number>> {
     if (!Array.isArray(coords)) {
       throw new TypeError('Coordinates must be an Array');
     }
@@ -145,3 +157,5 @@ export default class ParsePolygon {
     return points;
   }
 }
+
+export default ParsePolygon;

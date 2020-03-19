@@ -11,17 +11,16 @@
 
 import CoreManager from './CoreManager';
 
-import type ParsePromise from './ParsePromise';
-
 /**
  * Parse.Analytics provides an interface to Parse's logging and analytics
  * backend.
  *
  * @class Parse.Analytics
  * @static
+ * @hideconstructor
  */
 
- /**
+/**
   * Tracks the occurrence of a custom event with additional dimensions.
   * Parse will store a data point at the time of invocation with the given
   * event name.
@@ -44,19 +43,18 @@ import type ParsePromise from './ParsePromise';
   * There is a default limit of 8 dimensions per event tracked.
   *
   * @method track
+  * @name Parse.Analytics.track
   * @param {String} name The name of the custom event to report to Parse as
   * having happened.
   * @param {Object} dimensions The dictionary of information by which to
   * segment this event.
-  * @param {Object} options A Backbone-style callback object.
-  * @return {Parse.Promise} A promise that is resolved when the round-trip
+  * @return {Promise} A promise that is resolved when the round-trip
   * to the server completes.
   */
 export function track(
-    name: string,
-    dimensions: { [key: string]: string },
-    options?: mixed
-  ): ParsePromise {
+  name: string,
+  dimensions: { [key: string]: string }
+): Promise {
   name = name || '';
   name = name.replace(/^\s*/, '');
   name = name.replace(/\s*$/, '');
@@ -64,7 +62,7 @@ export function track(
     throw new TypeError('A name for the custom event must be provided');
   }
 
-  for (var key in dimensions) {
+  for (const key in dimensions) {
     if (typeof key !== 'string' || typeof dimensions[key] !== 'string') {
       throw new TypeError(
         'track() dimensions expects keys and values of type "string".'
@@ -72,18 +70,14 @@ export function track(
     }
   }
 
-  options = options || {};
-  return (
-    CoreManager.getAnalyticsController()
-      .track(name, dimensions)
-      ._thenRunCallbacks(options)
-  );
+  return CoreManager.getAnalyticsController()
+    .track(name, dimensions);
 }
 
-var DefaultController = {
+const DefaultController = {
   track(name, dimensions) {
-    var path = 'events/' + name;
-    var RESTController = CoreManager.getRESTController();
+    const path = 'events/' + name;
+    const RESTController = CoreManager.getRESTController();
     return RESTController.request('POST', path, { dimensions: dimensions });
   }
 };

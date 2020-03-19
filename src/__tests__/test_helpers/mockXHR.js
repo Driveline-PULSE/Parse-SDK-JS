@@ -14,10 +14,11 @@
  *   { status: ..., response: ... }
  * where status is a HTTP status number and result is a JSON object to pass
  * alongside it.
+ * `upload` can be provided to mock the XMLHttpRequest.upload property.
  */
-function mockXHR(results) {
-  var XHR = function() { };
-  var attempts = 0;
+function mockXHR(results, options = {}) {
+  const XHR = function() { };
+  let attempts = 0;
   XHR.prototype = {
     open: function() { },
     setRequestHeader: function() { },
@@ -27,6 +28,7 @@ function mockXHR(results) {
       this.readyState = 4;
       attempts++;
       this.onreadystatechange();
+      this.onprogress(options.progress);
     }
   };
   return XHR;

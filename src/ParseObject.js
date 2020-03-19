@@ -8,17 +8,20 @@
  *
  * @flow
  */
+const uuidv4 = require('uuid/v4');
 
 import CoreManager from './CoreManager';
 import canBeSerialized from './canBeSerialized';
 import decode from './decode';
 import encode from './encode';
-import equals from './equals';
 import escape from './escape';
 import ParseACL from './ParseACL';
 import parseDate from './parseDate';
 import ParseError from './ParseError';
 import ParseFile from './ParseFile';
+import { when, continueWhile, resolvingPromise } from './promiseUtils';
+import { DEFAULT_PIN, PIN_PREFIX } from './LocalDatastoreUtils';
+
 import {
   opFromJSON,
   Op,
@@ -30,7 +33,6 @@ import {
   RemoveOp,
   RelationOp
 } from './ParseOp';
-import ParsePromise from './ParsePromise';
 import ParseQuery from './ParseQuery';
 import ParseRelation from './ParseRelation';
 import * as SingleInstanceStateController from './SingleInstanceStateController';
@@ -53,18 +55,20 @@ type SaveParams = {
   body: AttributeMap;
 };
 
+type SaveOptions = FullOptions & {
+  cascadeSave?: boolean
+}
+
 // Mapping of class names to constructors, so we can populate objects from the
 // server with appropriate subclasses of ParseObject
-var classMap = {};
+const classMap = {};
 
-// Global counter for generating unique local Ids
-var localCount = 0;
 // Global counter for generating unique Ids for non-single-instance objects
-var objectCount = 0;
+let objectCount = 0;
 // On web clients, objects are single-instance: any two objects with the same Id
 // will have the same attributes. However, this may be dangerous default
 // behavior in a server scenario
-var singleInstance = (!CoreManager.get('IS_NODE'));
+let singleInstance = (!CoreManager.get('IS_NODE'));
 if (singleInstance) {
   CoreManager.setObjectStateController(SingleInstanceStateController);
 } else {
@@ -72,54 +76,45 @@ if (singleInstance) {
 }
 
 function getServerUrlPath() {
-  var serverUrl = CoreManager.get('SERVER_URL');
+  let serverUrl = CoreManager.get('SERVER_URL');
   if (serverUrl[serverUrl.length - 1] !== '/') {
     serverUrl += '/';
   }
-  var url = serverUrl.replace(/https?:\/\//, '');
+  const url = serverUrl.replace(/https?:\/\//, '');
   return url.substr(url.indexOf('/'));
 }
 
 /**
  * Creates a new model with defined attributes.
- *
- * <p>You won't normally call this method directly.  It is recommended that
- * you use a subclass of <code>Parse.Object</code> instead, created by calling
- * <code>extend</code>.</p>
- *
- * <p>However, if you don't want to use a subclass, or aren't sure which
- * subclass is appropriate, you can use this form:<pre>
- *     var object = new Parse.Object("ClassName");
- * </pre>
- * That is basically equivalent to:<pre>
- *     var MyClass = Parse.Object.extend("ClassName");
- *     var object = new MyClass();
- * </pre></p>
- *
- * @class Parse.Object
- * @constructor
- * @param {String} className The class name for the object
- * @param {Object} attributes The initial set of data to store in the object.
- * @param {Object} options The options for this object instance.
+  *
+  * <p>You won't normally call this method directly.  It is recommended that
+  * you use a subclass of <code>Parse.Object</code> instead, created by calling
+  * <code>extend</code>.</p>
+  *
+  * <p>However, if you don't want to use a subclass, or aren't sure which
+  * subclass is appropriate, you can use this form:<pre>
+  *     var object = new Parse.Object("ClassName");
+  * </pre>
+  * That is basically equivalent to:<pre>
+  *     var MyClass = Parse.Object.extend("ClassName");
+  *     var object = new MyClass();
+  * </pre></p>
+  *
+ * @alias Parse.Object
  */
-export default class ParseObject {
+class ParseObject {
   /**
-   * The ID of this object, unique within its class.
-   * @property id
-   * @type String
+   * @param {String} className The class name for the object
+   * @param {Object} attributes The initial set of data to store in the object.
+   * @param {Object} options The options for this object instance.
    */
-  id: ?string;
-  _localId: ?string;
-  _objCount: number;
-  className: string;
-
   constructor(className: ?string | { className: string, [attr: string]: mixed }, attributes?: { [attr: string]: mixed }, options?: { ignoreValidation: boolean }) {
     // Enable legacy initializers
     if (typeof this.initialize === 'function') {
       this.initialize.apply(this, arguments);
     }
 
-    var toSet = null;
+    let toSet = null;
     this._objCount = objectCount++;
     if (typeof className === 'string') {
       this.className = className;
@@ -129,7 +124,7 @@ export default class ParseObject {
     } else if (className && typeof className === 'object') {
       this.className = className.className;
       toSet = {};
-      for (var attr in className) {
+      for (const attr in className) {
         if (attr !== 'className') {
           toSet[attr] = className[attr];
         }
@@ -143,10 +138,20 @@ export default class ParseObject {
     }
   }
 
+  /**
+   * The ID of this object, unique within its class.
+   * @property id
+   * @type String
+   */
+  id: ?string;
+  _localId: ?string;
+  _objCount: number;
+  className: string;
+
   /** Prototype getters / setters **/
 
   get attributes(): AttributeMap {
-    let stateController = CoreManager.getObjectStateController();
+    const stateController = CoreManager.getObjectStateController();
     return Object.freeze(stateController.estimateAttributes(this._getStateIdentifier()));
   }
 
@@ -196,7 +201,7 @@ export default class ParseObject {
     if (typeof this._localId === 'string') {
       return this._localId;
     }
-    var localId = 'local' + String(localCount++);
+    const localId = 'local' + uuidv4();
     this._localId = localId;
     return localId;
   }
@@ -220,41 +225,45 @@ export default class ParseObject {
   }
 
   _getServerData(): AttributeMap {
-    let stateController = CoreManager.getObjectStateController();
+    const stateController = CoreManager.getObjectStateController();
     return stateController.getServerData(this._getStateIdentifier());
   }
 
   _clearServerData() {
-    var serverData = this._getServerData();
-    var unset = {};
-    for (var attr in serverData) {
+    const serverData = this._getServerData();
+    const unset = {};
+    for (const attr in serverData) {
       unset[attr] = undefined;
     }
-    let stateController = CoreManager.getObjectStateController();
+    const stateController = CoreManager.getObjectStateController();
     stateController.setServerData(this._getStateIdentifier(), unset);
   }
 
   _getPendingOps(): Array<OpsMap> {
-    let stateController = CoreManager.getObjectStateController();
+    const stateController = CoreManager.getObjectStateController();
     return stateController.getPendingOps(this._getStateIdentifier());
   }
 
-  _clearPendingOps() {
-    var pending = this._getPendingOps();
-    var latest = pending[pending.length - 1];
-    var keys = Object.keys(latest);
+  /**
+   * @param {Array<string>} [keysToClear] - if specified, only ops matching
+   * these fields will be cleared
+   */
+  _clearPendingOps(keysToClear?: Array<string>) {
+    const pending = this._getPendingOps();
+    const latest = pending[pending.length - 1];
+    const keys = keysToClear || Object.keys(latest);
     keys.forEach((key) => {
       delete latest[key];
     });
   }
 
   _getDirtyObjectAttributes(): AttributeMap {
-    var attributes = this.attributes;
-    var stateController = CoreManager.getObjectStateController();
-    var objectCache = stateController.getObjectCache(this._getStateIdentifier());
-    var dirty = {};
-    for (var attr in attributes) {
-      var val = attributes[attr];
+    const attributes = this.attributes;
+    const stateController = CoreManager.getObjectStateController();
+    const objectCache = stateController.getObjectCache(this._getStateIdentifier());
+    const dirty = {};
+    for (const attr in attributes) {
+      const val = attributes[attr];
       if (val &&
         typeof val === 'object' &&
         !(val instanceof ParseObject) &&
@@ -264,8 +273,8 @@ export default class ParseObject {
         // Due to the way browsers construct maps, the key order will not change
         // unless the object is changed
         try {
-          var json = encode(val, false, true);
-          var stringified = JSON.stringify(json);
+          const json = encode(val, false, true);
+          const stringified = JSON.stringify(json);
           if (objectCache[attr] !== stringified) {
             dirty[attr] = val;
           }
@@ -279,20 +288,36 @@ export default class ParseObject {
     return dirty;
   }
 
-  _toFullJSON(seen: Array<any>): AttributeMap {
-    var json: { [key: string]: mixed } = this.toJSON(seen);
+  _toFullJSON(seen?: Array<any>): AttributeMap {
+    const json: { [key: string]: mixed } = this.toJSON(seen);
     json.__type = 'Object';
     json.className = this.className;
     return json;
   }
 
   _getSaveJSON(): AttributeMap {
-    var pending = this._getPendingOps();
-    var dirtyObjects = this._getDirtyObjectAttributes();
-    var json = {};
-    var attr;
+    const pending = this._getPendingOps();
+    const dirtyObjects = this._getDirtyObjectAttributes();
+    const json = {};
+    let attr;
+
     for (attr in dirtyObjects) {
-      json[attr] = new SetOp(dirtyObjects[attr]).toJSON();
+      let isDotNotation = false;
+      for (let i = 0; i < pending.length; i += 1) {
+        for (const field in pending[i]) {
+          // Dot notation operations are handled later
+          if (field.includes('.')) {
+            const fieldName = field.split('.')[0];
+            if (fieldName === attr) {
+              isDotNotation = true;
+              break;
+            }
+          }
+        }
+      }
+      if (!isDotNotation) {
+        json[attr] = new SetOp(dirtyObjects[attr]).toJSON();
+      }
     }
     for (attr in pending[0]) {
       json[attr] = pending[0][attr].toJSON();
@@ -301,9 +326,9 @@ export default class ParseObject {
   }
 
   _getSaveParams(): SaveParams {
-    var method = this.id ? 'PUT' : 'POST';
-    var body = this._getSaveJSON();
-    var path = 'classes/' + this.className;
+    const method = this.id ? 'PUT' : 'POST';
+    const body = this._getSaveJSON();
+    let path = 'classes/' + this.className;
     if (this.id) {
       path += '/' + this.id;
     } else if (this.className === '_User') {
@@ -320,10 +345,10 @@ export default class ParseObject {
     if (!this.id && serverData.objectId) {
       this.id = serverData.objectId;
     }
-    let stateController = CoreManager.getObjectStateController();
+    const stateController = CoreManager.getObjectStateController();
     stateController.initializeState(this._getStateIdentifier());
-    var decoded = {};
-    for (var attr in serverData) {
+    const decoded = {};
+    for (const attr in serverData) {
       if (attr === 'ACL') {
         decoded[attr] = new ParseACL(serverData[attr]);
       } else if (attr !== 'objectId') {
@@ -346,8 +371,8 @@ export default class ParseObject {
   }
 
   _setExisted(existed: boolean) {
-    let stateController = CoreManager.getObjectStateController();
-    let state = stateController.getState(this._getStateIdentifier());
+    const stateController = CoreManager.getObjectStateController();
+    const state = stateController.getState(this._getStateIdentifier());
     if (state) {
       state.existed = existed;
     }
@@ -356,8 +381,8 @@ export default class ParseObject {
   _migrateId(serverId: string) {
     if (this._localId && serverId) {
       if (singleInstance) {
-        let stateController = CoreManager.getObjectStateController();
-        let oldState = stateController.removeState(this._getStateIdentifier());
+        const stateController = CoreManager.getObjectStateController();
+        const oldState = stateController.removeState(this._getStateIdentifier());
         this.id = serverId;
         delete this._localId;
         if (oldState) {
@@ -371,10 +396,10 @@ export default class ParseObject {
   }
 
   _handleSaveResponse(response: AttributeMap, status: number) {
-    var changes = {};
-    var attr;
-    var stateController = CoreManager.getObjectStateController();
-    var pending = stateController.popPendingState(this._getStateIdentifier());
+    const changes = {};
+    let attr;
+    const stateController = CoreManager.getObjectStateController();
+    const pending = stateController.popPendingState(this._getStateIdentifier());
     for (attr in pending) {
       if (pending[attr] instanceof RelationOp) {
         changes[attr] = pending[attr].applyTo(undefined, this, attr);
@@ -410,8 +435,7 @@ export default class ParseObject {
   }
 
   _handleSaveError() {
-    var pending = this._getPendingOps();
-    let stateController = CoreManager.getObjectStateController();
+    const stateController = CoreManager.getObjectStateController();
     stateController.mergeFirstPendingState(this._getStateIdentifier());
   }
 
@@ -423,23 +447,22 @@ export default class ParseObject {
 
   /**
    * Returns a JSON version of the object suitable for saving to Parse.
-   * @method toJSON
    * @return {Object}
    */
   toJSON(seen: Array<any> | void): AttributeMap {
-    var seenEntry = this.id ? this.className + ':' + this.id : this;
-    var seen = seen || [seenEntry];
-    var json = {};
-    var attrs = this.attributes;
-    for (var attr in attrs) {
+    const seenEntry = this.id ? this.className + ':' + this.id : this;
+    seen = seen || [seenEntry];
+    const json = {};
+    const attrs = this.attributes;
+    for (const attr in attrs) {
       if ((attr === 'createdAt' || attr === 'updatedAt') && attrs[attr].toJSON) {
         json[attr] = attrs[attr].toJSON();
       } else {
         json[attr] = encode(attrs[attr], false, false, seen);
       }
     }
-    var pending = this._getPendingOps();
-    for (var attr in pending[0]) {
+    const pending = this._getPendingOps();
+    for (const attr in pending[0]) {
       json[attr] = pending[0][attr].toJSON();
     }
 
@@ -451,7 +474,7 @@ export default class ParseObject {
 
   /**
    * Determines whether this ParseObject is equal to another ParseObject
-   * @method equals
+   * @param {Object} other - An other object ot compare
    * @return {Boolean}
    */
   equals(other: mixed): boolean {
@@ -470,7 +493,6 @@ export default class ParseObject {
    * Returns true if this object has been modified since its last
    * save/refresh.  If an attribute is specified, it returns true only if that
    * particular attribute has been modified since the last save/refresh.
-   * @method dirty
    * @param {String} attr An attribute name (optional).
    * @return {Boolean}
    */
@@ -478,13 +500,13 @@ export default class ParseObject {
     if (!this.id) {
       return true;
     }
-    var pendingOps = this._getPendingOps();
-    var dirtyObjects = this._getDirtyObjectAttributes();
+    const pendingOps = this._getPendingOps();
+    const dirtyObjects = this._getDirtyObjectAttributes();
     if (attr) {
       if (dirtyObjects.hasOwnProperty(attr)) {
         return true;
       }
-      for (var i = 0; i < pendingOps.length; i++) {
+      for (let i = 0; i < pendingOps.length; i++) {
         if (pendingOps[i].hasOwnProperty(attr)) {
           return true;
         }
@@ -502,28 +524,35 @@ export default class ParseObject {
 
   /**
    * Returns an array of keys that have been modified since last save/refresh
-   * @method dirtyKeys
-   * @return {Array of string}
+   * @return {String[]}
    */
   dirtyKeys(): Array<string> {
-    var pendingOps = this._getPendingOps();
-    var keys = {};
-    for (var i = 0; i < pendingOps.length; i++) {
-      for (var attr in pendingOps[i]) {
+    const pendingOps = this._getPendingOps();
+    const keys = {};
+    for (let i = 0; i < pendingOps.length; i++) {
+      for (const attr in pendingOps[i]) {
         keys[attr] = true;
       }
     }
-    var dirtyObjects = this._getDirtyObjectAttributes();
-    for (var attr in dirtyObjects) {
+    const dirtyObjects = this._getDirtyObjectAttributes();
+    for (const attr in dirtyObjects) {
       keys[attr] = true;
     }
     return Object.keys(keys);
   }
 
   /**
+   * Returns true if the object has been fetched.
+   * @return {Boolean}
+   */
+  isDataAvailable(): boolean {
+    const serverData = this._getServerData();
+    return !!Object.keys(serverData).length;
+  }
+
+  /**
    * Gets a Pointer referencing this Object.
-   * @method toPointer
-   * @return {Object}
+   * @return {Pointer}
    */
   toPointer(): Pointer {
     if (!this.id) {
@@ -538,7 +567,6 @@ export default class ParseObject {
 
   /**
    * Gets the value of an attribute.
-   * @method get
    * @param {String} attr The string name of an attribute.
    */
   get(attr: string): mixed {
@@ -547,11 +575,11 @@ export default class ParseObject {
 
   /**
    * Gets a relation on the given class for the attribute.
-   * @method relation
    * @param String attr The attribute to get the relation for.
+   * @return {Parse.Relation}
    */
   relation(attr: string): ParseRelation {
-    var value = this.get(attr);
+    const value = this.get(attr);
     if (value) {
       if (!(value instanceof ParseRelation)) {
         throw new Error('Called relation() on non-relation field ' + attr);
@@ -564,15 +592,13 @@ export default class ParseObject {
 
   /**
    * Gets the HTML-escaped value of an attribute.
-   * @method escape
    * @param {String} attr The string name of an attribute.
    */
   escape(attr: string): string {
-    var val = this.attributes[attr];
+    let val = this.attributes[attr];
     if (val == null) {
       return '';
     }
-    var str = val;
     if (typeof val !== 'string') {
       if (typeof val.toString !== 'function') {
         return '';
@@ -585,20 +611,22 @@ export default class ParseObject {
   /**
    * Returns <code>true</code> if the attribute contains a value that is not
    * null or undefined.
-   * @method has
    * @param {String} attr The string name of the attribute.
    * @return {Boolean}
    */
   has(attr: string): boolean {
-    var attribute = this._getAttribute(attr);
-    return attribute != null;
+    const attributes = this.attributes;
+    if (attributes.hasOwnProperty(attr)) {
+      return attributes[attr] != null;
+    }
+    return false;
   }
 
   /**
    * Sets a hash of model attributes on the object.
    *
-   * <p>You can call it with an object containing keys and values, or with one
-   * key and value.  For example:<pre>
+   * <p>You can call it with an object containing keys and values, with one
+   * key and value, or dot notation.  For example:<pre>
    *   gameTurn.set({
    *     player: player1,
    *     diceRoll: 2
@@ -616,16 +644,17 @@ export default class ParseObject {
    *
    *   game.set("finished", true);</pre></p>
    *
-   * @method set
+   *   game.set("player.score", 10);</pre></p>
+   *
    * @param {String} key The key to set.
    * @param {} value The value to give it.
    * @param {Object} options A set of options for the set.
    *     The only supported option is <code>error</code>.
-   * @return {Boolean} true if the set succeeded.
+   * @return {(ParseObject|Boolean)} true if the set succeeded.
    */
   set(key: mixed, value: mixed, options?: mixed): ParseObject | boolean {
-    var changes = {};
-    var newOps = {};
+    let changes = {};
+    const newOps = {};
     if (key && typeof key === 'object') {
       changes = key;
       options = value;
@@ -636,11 +665,11 @@ export default class ParseObject {
     }
 
     options = options || {};
-    var readonly = [];
+    let readonly = [];
     if (typeof this.constructor.readOnlyAttributes === 'function') {
       readonly = readonly.concat(this.constructor.readOnlyAttributes());
     }
-    for (var k in changes) {
+    for (const k in changes) {
       if (k === 'createdAt' || k === 'updatedAt') {
         // This property is read-only, but for legacy reasons we silently
         // ignore it
@@ -668,15 +697,29 @@ export default class ParseObject {
         !(changes[k] instanceof ParseACL)
       ) {
         newOps[k] = new SetOp(new ParseACL(changes[k]));
+      } else if (changes[k] instanceof ParseRelation) {
+        const relation = new ParseRelation(this, k);
+        relation.targetClassName = changes[k].targetClassName;
+        newOps[k] = new SetOp(relation);
       } else {
         newOps[k] = new SetOp(changes[k]);
       }
     }
 
+    const currentAttributes = this.attributes;
+
+    // Only set nested fields if exists
+    const serverData = this._getServerData();
+    if (typeof key === 'string' && key.includes('.')) {
+      const field = key.split('.')[0];
+      if (!serverData[field]) {
+        return this;
+      }
+    }
+
     // Calculate new values
-    var currentAttributes = this._getAttributes(Object.keys(changes));
-    var newValues = {};
-    for (var attr in newOps) {
+    const newValues = {};
+    for (const attr in newOps) {
       if (newOps[attr] instanceof RelationOp) {
         newValues[attr] = newOps[attr].applyTo(currentAttributes[attr], this, attr);
       } else if (!(newOps[attr] instanceof UnsetOp)) {
@@ -686,7 +729,7 @@ export default class ParseObject {
 
     // Validate changes
     if (!options.ignoreValidation) {
-      var validation = this.validate(newValues);
+      const validation = this.validate(newValues);
       if (validation) {
         if (typeof options.error === 'function') {
           options.error(this, validation);
@@ -696,11 +739,11 @@ export default class ParseObject {
     }
 
     // Consolidate Ops
-    var pendingOps = this._getPendingOps();
-    var last = pendingOps.length - 1;
-    var stateController = CoreManager.getObjectStateController();
-    for (var attr in newOps) {
-      var nextOp = newOps[attr].mergeWith(pendingOps[last][attr]);
+    const pendingOps = this._getPendingOps();
+    const last = pendingOps.length - 1;
+    const stateController = CoreManager.getObjectStateController();
+    for (const attr in newOps) {
+      const nextOp = newOps[attr].mergeWith(pendingOps[last][attr]);
       stateController.setPendingOp(this._getStateIdentifier(), attr, nextOp);
     }
 
@@ -710,8 +753,8 @@ export default class ParseObject {
   /**
    * Remove an attribute from the model. This is a noop if the attribute doesn't
    * exist.
-   * @method unset
    * @param {String} attr The string name of an attribute.
+   * @return {(ParseObject|Boolean)}
    */
   unset(attr: string, options?: { [opt: string]: mixed }): ParseObject | boolean {
     options = options || {};
@@ -723,9 +766,9 @@ export default class ParseObject {
    * Atomically increments the value of the given attribute the next time the
    * object is saved. If no amount is specified, 1 is used by default.
    *
-   * @method increment
    * @param attr {String} The key.
    * @param amount {Number} The amount to increment by (optional).
+   * @return {(ParseObject|Boolean)}
    */
   increment(attr: string, amount?: number): ParseObject | boolean {
     if (typeof amount === 'undefined') {
@@ -738,11 +781,29 @@ export default class ParseObject {
   }
 
   /**
+   * Atomically decrements the value of the given attribute the next time the
+   * object is saved. If no amount is specified, 1 is used by default.
+   *
+   * @param attr {String} The key.
+   * @param amount {Number} The amount to decrement by (optional).
+   * @return {(ParseObject|Boolean)}
+   */
+  decrement(attr: string, amount?: number): ParseObject | boolean {
+    if (typeof amount === 'undefined') {
+      amount = 1;
+    }
+    if (typeof amount !== 'number') {
+      throw new Error('Cannot decrement by a non-numeric amount.');
+    }
+    return this.set(attr, new IncrementOp(amount * -1));
+  }
+
+  /**
    * Atomically add an object to the end of the array associated with a given
    * key.
-   * @method add
    * @param attr {String} The key.
    * @param item {} The item to add.
+   * @return {(ParseObject|Boolean)}
    */
   add(attr: string, item: mixed): ParseObject | boolean {
     return this.set(attr, new AddOp([item]));
@@ -751,9 +812,9 @@ export default class ParseObject {
   /**
    * Atomically add the objects to the end of the array associated with a given
    * key.
-   * @method addAll
    * @param attr {String} The key.
-   * @param items {[]} The items to add.
+   * @param items {Object[]} The items to add.
+   * @return {(ParseObject|Boolean)}
    */
   addAll(attr: string, items: Array<mixed>): ParseObject | boolean {
     return this.set(attr, new AddOp(items));
@@ -764,9 +825,9 @@ export default class ParseObject {
    * if it is not already present in the array. The position of the insert is
    * not guaranteed.
    *
-   * @method addUnique
    * @param attr {String} The key.
    * @param item {} The object to add.
+   * @return {(ParseObject|Boolean)}
    */
   addUnique(attr: string, item: mixed): ParseObject | boolean {
     return this.set(attr, new AddUniqueOp([item]));
@@ -777,9 +838,9 @@ export default class ParseObject {
    * if it is not already present in the array. The position of the insert is
    * not guaranteed.
    *
-   * @method addAllUnique
    * @param attr {String} The key.
-   * @param items {[]} The objects to add.
+   * @param items {Object[]} The objects to add.
+   * @return {(ParseObject|Boolean)}
    */
   addAllUnique(attr: string, items: Array<mixed>): ParseObject | boolean {
     return this.set(attr, new AddUniqueOp(items));
@@ -789,9 +850,9 @@ export default class ParseObject {
    * Atomically remove all instances of an object from the array associated
    * with a given key.
    *
-   * @method remove
    * @param attr {String} The key.
    * @param item {} The object to remove.
+   * @return {(ParseObject|Boolean)}
    */
   remove(attr: string, item: mixed): ParseObject | boolean {
     return this.set(attr, new RemoveOp([item]));
@@ -801,9 +862,9 @@ export default class ParseObject {
    * Atomically remove all instances of the objects from the array associated
    * with a given key.
    *
-   * @method removeAll
    * @param attr {String} The key.
-   * @param items {[]} The object to remove.
+   * @param items {Object[]} The object to remove.
+   * @return {(ParseObject|Boolean)}
    */
   removeAll(attr: string, items: Array<mixed>): ParseObject | boolean {
     return this.set(attr, new RemoveOp(items));
@@ -815,13 +876,12 @@ export default class ParseObject {
    * saved. For example, after calling object.increment("x"), calling
    * object.op("x") would return an instance of Parse.Op.Increment.
    *
-   * @method op
    * @param attr {String} The key.
    * @returns {Parse.Op} The operation, or undefined if none.
    */
   op(attr: string): ?Op {
-    var pending = this._getPendingOps();
-    for (var i = pending.length; i--;) {
+    const pending = this._getPendingOps();
+    for (let i = pending.length; i--;) {
       if (pending[i][attr]) {
         return pending[i][attr];
       }
@@ -829,22 +889,21 @@ export default class ParseObject {
   }
 
   /**
-   * Creates a new model with identical attributes to this one, similar to Backbone.Model's clone()
-   * @method clone
+   * Creates a new model with identical attributes to this one.
    * @return {Parse.Object}
    */
   clone(): any {
-    let clone = new this.constructor();
+    const clone = new this.constructor();
     if (!clone.className) {
       clone.className = this.className;
     }
     let attributes = this.attributes;
     if (typeof this.constructor.readOnlyAttributes === 'function') {
-      let readonly = this.constructor.readOnlyAttributes() || [];
+      const readonly = this.constructor.readOnlyAttributes() || [];
       // Attributes are frozen, so we have to rebuild an object,
       // rather than delete readonly keys
-      let copy = {};
-      for (let a in attributes) {
+      const copy = {};
+      for (const a in attributes) {
         if (readonly.indexOf(a) < 0) {
           copy[a] = attributes[a];
         }
@@ -859,11 +918,10 @@ export default class ParseObject {
 
   /**
    * Creates a new instance of this object. Not to be confused with clone()
-   * @method newInstance
    * @return {Parse.Object}
    */
   newInstance(): any {
-    let clone = new this.constructor();
+    const clone = new this.constructor();
     if (!clone.className) {
       clone.className = this.className;
     }
@@ -873,7 +931,7 @@ export default class ParseObject {
       return clone;
     }
 
-    let stateController = CoreManager.getObjectStateController();
+    const stateController = CoreManager.getObjectStateController();
     if (stateController) {
       stateController.duplicateState(this._getStateIdentifier(), clone._getStateIdentifier());
     }
@@ -882,7 +940,6 @@ export default class ParseObject {
 
   /**
    * Returns true if this object has never been saved to Parse.
-   * @method isNew
    * @return {Boolean}
    */
   isNew(): boolean {
@@ -893,15 +950,14 @@ export default class ParseObject {
    * Returns true if this object was created by the Parse server when the
    * object might have already been there (e.g. in the case of a Facebook
    * login)
-   * @method existed
    * @return {Boolean}
    */
   existed(): boolean {
     if (!this.id) {
       return false;
     }
-    let stateController = CoreManager.getObjectStateController();
-    let state = stateController.getState(this._getStateIdentifier());
+    const stateController = CoreManager.getObjectStateController();
+    const state = stateController.getState(this._getStateIdentifier());
     if (state) {
       return state.existed;
     }
@@ -909,8 +965,35 @@ export default class ParseObject {
   }
 
   /**
+   * Returns true if this object exists on the Server
+   *
+   * @param {Object} options
+   * Valid options are:<ul>
+   *   <li>useMasterKey: In Cloud Code and Node only, causes the Master Key to
+   *     be used for this request.
+   *   <li>sessionToken: A valid session token, used for making a request on
+   *       behalf of a specific user.
+   * </ul>
+   * @return {Promise<boolean>} A boolean promise that is fulfilled if object exists.
+   */
+  async exists(options?: RequestOptions): Promise<boolean> {
+    if (!this.id) {
+      return false;
+    }
+    try {
+      const query = new ParseQuery(this.className)
+      await query.get(this.id, options);
+      return true;
+    } catch (e) {
+      if (e.code === ParseError.OBJECT_NOT_FOUND) {
+        return false;
+      }
+      throw e;
+    }
+  }
+
+  /**
    * Checks if the model is currently in a valid state.
-   * @method isValid
    * @return {Boolean}
    */
   isValid(): boolean {
@@ -923,7 +1006,6 @@ export default class ParseObject {
    * to provide additional validation on <code>set</code> and
    * <code>save</code>.  Your implementation should return
    *
-   * @method validate
    * @param {Object} attrs The current data to validate.
    * @return {} False if the data is valid.  An error object otherwise.
    * @see Parse.Object#set
@@ -935,8 +1017,8 @@ export default class ParseObject {
         'ACL must be a Parse ACL.'
       );
     }
-    for (var key in attrs) {
-      if (!(/^[A-Za-z][0-9A-Za-z_]*$/).test(key)) {
+    for (const key in attrs) {
+      if (!(/^[A-Za-z][0-9A-Za-z_.]*$/).test(key)) {
         return new ParseError(ParseError.INVALID_KEY_NAME);
       }
     }
@@ -945,12 +1027,11 @@ export default class ParseObject {
 
   /**
    * Returns the ACL for this object.
-   * @method getACL
    * @returns {Parse.ACL} An instance of Parse.ACL.
    * @see Parse.Object#get
    */
   getACL(): ?ParseACL {
-    var acl = this.get('ACL');
+    const acl = this.get('ACL');
     if (acl instanceof ParseACL) {
       return acl;
     }
@@ -959,11 +1040,9 @@ export default class ParseObject {
 
   /**
    * Sets the ACL to be used for this object.
-   * @method setACL
    * @param {Parse.ACL} acl An instance of Parse.ACL.
-   * @param {Object} options Optional Backbone-like options object to be
-   *     passed in to set.
-   * @return {Boolean} Whether the set passed validation.
+   * @param {Object} options
+   * @return {(ParseObject|Boolean)} Whether the set passed validation.
    * @see Parse.Object#set
    */
   setACL(acl: ParseACL, options?: mixed): ParseObject | boolean {
@@ -971,25 +1050,36 @@ export default class ParseObject {
   }
 
   /**
-   * Clears any changes to this object made since the last call to save()
-   * @method revert
+   * Clears any (or specific) changes to this object made since the last call to save()
+   * @param {string} [keys] - specify which fields to revert
    */
-  revert(): void {
-    this._clearPendingOps();
+  revert(...keys: Array<string>): void {
+    let keysToRevert;
+    if(keys.length) {
+      keysToRevert = [];
+      for(const key of keys) {
+        if(typeof(key) === "string") {
+          keysToRevert.push(key);
+        } else {
+          throw new Error("Parse.Object#revert expects either no, or a list of string, arguments.");
+        }
+      }
+    }
+    this._clearPendingOps(keysToRevert);
   }
 
   /**
    * Clears all attributes on a model
-   * @method clear
+   * @return {(ParseObject | boolean)}
    */
   clear(): ParseObject | boolean {
-    var attributes = this.attributes;
-    var erasable = {};
-    var readonly = ['createdAt', 'updatedAt'];
+    const attributes = this.attributes;
+    const erasable = {};
+    let readonly = ['createdAt', 'updatedAt'];
     if (typeof this.constructor.readOnlyAttributes === 'function') {
       readonly = readonly.concat(this.constructor.readOnlyAttributes());
     }
-    for (var attr in attributes) {
+    for (const attr in attributes) {
       if (readonly.indexOf(attr) < 0) {
         erasable[attr] = true;
       }
@@ -1001,30 +1091,67 @@ export default class ParseObject {
    * Fetch the model from the server. If the server's representation of the
    * model differs from its current attributes, they will be overriden.
    *
-   * @method fetch
-   * @param {Object} options A Backbone-style callback object.
+   * @param {Object} options
    * Valid options are:<ul>
-   *   <li>success: A Backbone-style success callback.
-   *   <li>error: An Backbone-style error callback.
    *   <li>useMasterKey: In Cloud Code and Node only, causes the Master Key to
    *     be used for this request.
    *   <li>sessionToken: A valid session token, used for making a request on
    *       behalf of a specific user.
+   *   <li>include: The name(s) of the key(s) to include. Can be a string, an array of strings,
+   *       or an array of array of strings.
    * </ul>
-   * @return {Parse.Promise} A promise that is fulfilled when the fetch
+   * @return {Promise} A promise that is fulfilled when the fetch
    *     completes.
    */
-  fetch(options: RequestOptions): ParsePromise {
+  fetch(options: RequestOptions): Promise {
     options = options || {};
-    var fetchOptions = {};
+    const fetchOptions = {};
     if (options.hasOwnProperty('useMasterKey')) {
       fetchOptions.useMasterKey = options.useMasterKey;
     }
     if (options.hasOwnProperty('sessionToken')) {
       fetchOptions.sessionToken = options.sessionToken;
     }
-    var controller = CoreManager.getObjectController();
-    return controller.fetch(this, true, fetchOptions)._thenRunCallbacks(options);
+    if (options.hasOwnProperty('include')) {
+      fetchOptions.include = [];
+      if (Array.isArray(options.include)) {
+        options.include.forEach((key) => {
+          if (Array.isArray(key)) {
+            fetchOptions.include = fetchOptions.include.concat(key);
+          } else {
+            fetchOptions.include.push(key);
+          }
+        });
+      } else {
+        fetchOptions.include.push(options.include);
+      }
+    }
+    const controller = CoreManager.getObjectController();
+    return controller.fetch(this, true, fetchOptions);
+  }
+
+  /**
+   * Fetch the model from the server. If the server's representation of the
+   * model differs from its current attributes, they will be overriden.
+   *
+   * Includes nested Parse.Objects for the provided key. You can use dot
+   * notation to specify which fields in the included object are also fetched.
+   *
+   * @param {String|Array<string|Array<string>>} keys The name(s) of the key(s) to include.
+   * @param {Object} options
+   * Valid options are:<ul>
+   *   <li>useMasterKey: In Cloud Code and Node only, causes the Master Key to
+   *     be used for this request.
+   *   <li>sessionToken: A valid session token, used for making a request on
+   *       behalf of a specific user.
+   * </ul>
+   * @return {Promise} A promise that is fulfilled when the fetch
+   *     completes.
+   */
+  fetchWithInclude(keys: String|Array<string|Array<string>>, options: RequestOptions): Promise {
+    options = options || {};
+    options.include = keys;
+    return this.fetch(options);
   }
 
   /**
@@ -1032,6 +1159,8 @@ export default class ParseObject {
    * updatedAt will be updated when the request returns.
    * You can either call it as:<pre>
    *   object.save();</pre>
+   * or<pre>
+   *   object.save(attrs);</pre>
    * or<pre>
    *   object.save(null, options);</pre>
    * or<pre>
@@ -1043,44 +1172,54 @@ export default class ParseObject {
    *   gameTurn.save({
    *     player: "Jake Cutter",
    *     diceRoll: 2
-   *   }, {
-   *     success: function(gameTurnAgain) {
-   *       // The save was successful.
-   *     },
-   *     error: function(gameTurnAgain, error) {
-   *       // The save failed.  Error is an instance of Parse.Error.
-   *     }
-   *   });</pre>
-   * or with promises:<pre>
-   *   gameTurn.save({
-   *     player: "Jake Cutter",
-   *     diceRoll: 2
    *   }).then(function(gameTurnAgain) {
    *     // The save was successful.
    *   }, function(error) {
    *     // The save failed.  Error is an instance of Parse.Error.
    *   });</pre>
    *
-   * @method save
-   * @param {Object} options A Backbone-style callback object.
+   * @param {String|Object|null} [attrs]
    * Valid options are:<ul>
-   *   <li>success: A Backbone-style success callback.
-   *   <li>error: An Backbone-style error callback.
-   *   <li>useMasterKey: In Cloud Code and Node only, causes the Master Key to
+   *   <li>`Object` - Key/value pairs to update on the object.</li>
+   *   <li>`String` Key - Key of attribute to update (requires arg2 to also be string)</li>
+   *   <li>`null` - Passing null for arg1 allows you to save the object with options passed in arg2.</li>
+   * </ul>
+   *
+   * @param {String|Object} [options]
+   * <ul>
+   *   <li>`String` Value - If arg1 was passed as a key, arg2 is the value that should be set on that key.</li>
+   *   <li>`Object` Options - Valid options are:
+   *     <ul>
+   *       <li>useMasterKey: In Cloud Code and Node only, causes the Master Key to
    *     be used for this request.
+   *       <li>sessionToken: A valid session token, used for making a request on
+   *       behalf of a specific user.
+   *       <li>cascadeSave: If `false`, nested objects will not be saved (default is `true`).
+   *     </ul>
+   *   </li>
+   * </ul>
+   *
+   * @param {Object} [options]
+   * Used to pass option parameters to method if arg1 and arg2 were both passed as strings.
+   * Valid options are:
+   * <ul>
+   *   <li>useMasterKey: In Cloud Code and Node only, causes the Master Key to
+   *       be used for this request.
    *   <li>sessionToken: A valid session token, used for making a request on
    *       behalf of a specific user.
+   *   <li>cascadeSave: If `false`, nested objects will not be saved (default is `true`).
    * </ul>
-   * @return {Parse.Promise} A promise that is fulfilled when the save
+   *
+   * @return {Promise} A promise that is fulfilled when the save
    *     completes.
    */
   save(
     arg1: ?string | { [attr: string]: mixed },
-    arg2: FullOptions | mixed,
-    arg3?: FullOptions
-  ): ParsePromise {
-    var attrs;
-    var options;
+    arg2: SaveOptions | mixed,
+    arg3?: SaveOptions
+  ): Promise {
+    let attrs;
+    let options;
     if (typeof arg1 === 'object' || typeof arg1 === 'undefined') {
       attrs = arg1;
       if (typeof arg2 === 'object') {
@@ -1092,6 +1231,7 @@ export default class ParseObject {
       options = arg3;
     }
 
+    // TODO: safely remove me
     // Support save({ success: function() {}, error: function() {} })
     if (!options && attrs) {
       options = {};
@@ -1106,53 +1246,50 @@ export default class ParseObject {
     }
 
     if (attrs) {
-      var validation = this.validate(attrs);
+      const validation = this.validate(attrs);
       if (validation) {
         if (options && typeof options.error === 'function') {
           options.error(this, validation);
         }
-        return ParsePromise.error(validation);
+        return Promise.reject(validation);
       }
       this.set(attrs, options);
     }
 
     options = options || {};
-    var saveOptions = {};
+    const saveOptions = {};
     if (options.hasOwnProperty('useMasterKey')) {
       saveOptions.useMasterKey = !!options.useMasterKey;
     }
     if (options.hasOwnProperty('sessionToken') && typeof options.sessionToken === 'string') {
       saveOptions.sessionToken = options.sessionToken;
     }
-
-    var controller = CoreManager.getObjectController();
-    var unsaved = unsavedChildren(this);
+    if (options.hasOwnProperty('installationId') && typeof options.installationId === 'string') {
+      saveOptions.installationId = options.installationId;
+    }
+    const controller = CoreManager.getObjectController();
+    const unsaved = options.cascadeSave !== false ? unsavedChildren(this) : null;
     return controller.save(unsaved, saveOptions).then(() => {
       return controller.save(this, saveOptions);
-    })._thenRunCallbacks(options, this);
+    });
   }
 
   /**
    * Destroy this model on the server if it was already persisted.
-   * If `wait: true` is passed, waits for the server to respond
-   * before removal.
    *
-   * @method destroy
-   * @param {Object} options A Backbone-style callback object.
+   * @param {Object} options
    * Valid options are:<ul>
-   *   <li>success: A Backbone-style success callback
-   *   <li>error: An Backbone-style error callback.
    *   <li>useMasterKey: In Cloud Code and Node only, causes the Master Key to
    *     be used for this request.
    *   <li>sessionToken: A valid session token, used for making a request on
    *       behalf of a specific user.
    * </ul>
-   * @return {Parse.Promise} A promise that is fulfilled when the destroy
+   * @return {Promise} A promise that is fulfilled when the destroy
    *     completes.
    */
-  destroy(options: RequestOptions): ParsePromise {
+  destroy(options: RequestOptions): Promise {
     options = options || {};
-    var destroyOptions = {};
+    const destroyOptions = {};
     if (options.hasOwnProperty('useMasterKey')) {
       destroyOptions.useMasterKey = options.useMasterKey;
     }
@@ -1160,18 +1297,133 @@ export default class ParseObject {
       destroyOptions.sessionToken = options.sessionToken;
     }
     if (!this.id) {
-      return ParsePromise.as()._thenRunCallbacks(options);
+      return Promise.resolve();
     }
     return CoreManager.getObjectController().destroy(
       this,
       destroyOptions
-    )._thenRunCallbacks(options);
+    );
+  }
+
+  /**
+   * Asynchronously stores the object and every object it points to in the local datastore,
+   * recursively, using a default pin name: _default.
+   *
+   * If those other objects have not been fetched from Parse, they will not be stored.
+   * However, if they have changed data, all the changes will be retained.
+   *
+   * <pre>
+   * await object.pin();
+   * </pre>
+   *
+   * To retrieve object:
+   * <code>query.fromLocalDatastore()</code> or <code>query.fromPin()</code>
+   *
+   * @return {Promise} A promise that is fulfilled when the pin completes.
+   */
+  pin(): Promise<void> {
+    return ParseObject.pinAllWithName(DEFAULT_PIN, [this]);
+  }
+
+  /**
+   * Asynchronously removes the object and every object it points to in the local datastore,
+   * recursively, using a default pin name: _default.
+   *
+   * <pre>
+   * await object.unPin();
+   * </pre>
+   *
+   * @return {Promise} A promise that is fulfilled when the unPin completes.
+   */
+  unPin(): Promise<void> {
+    return ParseObject.unPinAllWithName(DEFAULT_PIN, [this]);
+  }
+
+  /**
+   * Asynchronously returns if the object is pinned
+   *
+   * <pre>
+   * const isPinned = await object.isPinned();
+   * </pre>
+   *
+   * @return {Promise<boolean>} A boolean promise that is fulfilled if object is pinned.
+   */
+  async isPinned(): Promise<boolean> {
+    const localDatastore = CoreManager.getLocalDatastore();
+    if (!localDatastore.isEnabled) {
+      return Promise.reject('Parse.enableLocalDatastore() must be called first');
+    }
+    const objectKey = localDatastore.getKeyForObject(this);
+    const pin = await localDatastore.fromPinWithName(objectKey);
+    return pin.length > 0;
+  }
+
+  /**
+   * Asynchronously stores the objects and every object they point to in the local datastore, recursively.
+   *
+   * If those other objects have not been fetched from Parse, they will not be stored.
+   * However, if they have changed data, all the changes will be retained.
+   *
+   * <pre>
+   * await object.pinWithName(name);
+   * </pre>
+   *
+   * To retrieve object:
+   * <code>query.fromLocalDatastore()</code> or <code>query.fromPinWithName(name)</code>
+   *
+   * @param {String} name Name of Pin.
+   * @return {Promise} A promise that is fulfilled when the pin completes.
+   */
+  pinWithName(name: string): Promise<void> {
+    return ParseObject.pinAllWithName(name, [this]);
+  }
+
+  /**
+   * Asynchronously removes the object and every object it points to in the local datastore, recursively.
+   *
+   * <pre>
+   * await object.unPinWithName(name);
+   * </pre>
+   *
+   * @param {String} name Name of Pin.
+   * @return {Promise} A promise that is fulfilled when the unPin completes.
+   */
+  unPinWithName(name: string): Promise<void> {
+    return ParseObject.unPinAllWithName(name, [this]);
+  }
+
+  /**
+   * Asynchronously loads data from the local datastore into this object.
+   *
+   * <pre>
+   * await object.fetchFromLocalDatastore();
+   * </pre>
+   *
+   * You can create an unfetched pointer with <code>Parse.Object.createWithoutData()</code>
+   * and then call <code>fetchFromLocalDatastore()</code> on it.
+   *
+   * @return {Promise} A promise that is fulfilled when the fetch completes.
+   */
+  async fetchFromLocalDatastore(): Promise<ParseObject> {
+    const localDatastore = CoreManager.getLocalDatastore();
+    if (!localDatastore.isEnabled) {
+      throw new Error('Parse.enableLocalDatastore() must be called first');
+    }
+    const objectKey = localDatastore.getKeyForObject(this);
+    const pinned = await localDatastore._serializeObject(objectKey);
+    if (!pinned) {
+      throw new Error('Cannot fetch an unsaved ParseObject');
+    }
+    const result = ParseObject.fromJSON(pinned);
+    this._finishFetch(result.toJSON());
+
+    return this;
   }
 
   /** Static methods **/
 
   static _clearAllState() {
-    let stateController = CoreManager.getObjectStateController();
+    const stateController = CoreManager.getObjectStateController();
     stateController.clearAllState();
   }
 
@@ -1180,40 +1432,111 @@ export default class ParseObject {
    * If any error is encountered, stops and calls the error handler.
    *
    * <pre>
-   *   Parse.Object.fetchAll([object1, object2, ...], {
-   *     success: function(list) {
-   *       // All the objects were fetched.
-   *     },
-   *     error: function(error) {
-   *       // An error occurred while fetching one of the objects.
-   *     },
-   *   });
+   *   Parse.Object.fetchAll([object1, object2, ...])
+   *    .then((list) => {
+   *      // All the objects were fetched.
+   *    }, (error) => {
+   *      // An error occurred while fetching one of the objects.
+   *    });
    * </pre>
    *
-   * @method fetchAll
    * @param {Array} list A list of <code>Parse.Object</code>.
-   * @param {Object} options A Backbone-style callback object.
-   * @static
+   * @param {Object} options
    * Valid options are:<ul>
-   *   <li>success: A Backbone-style success callback.
-   *   <li>error: An Backbone-style error callback.
+   *   <li>useMasterKey: In Cloud Code and Node only, causes the Master Key to
+   *     be used for this request.
+   *   <li>sessionToken: A valid session token, used for making a request on
+   *       behalf of a specific user.
+   *   <li>include: The name(s) of the key(s) to include. Can be a string, an array of strings,
+   *       or an array of array of strings.
    * </ul>
+   * @static
    */
-  static fetchAll(list: Array<ParseObject>, options) {
-    var options = options || {};
-
-    var queryOptions = {};
+  static fetchAll(list: Array<ParseObject>, options: RequestOptions = {}) {
+    const queryOptions = {};
     if (options.hasOwnProperty('useMasterKey')) {
       queryOptions.useMasterKey = options.useMasterKey;
     }
     if (options.hasOwnProperty('sessionToken')) {
       queryOptions.sessionToken = options.sessionToken;
     }
+    if (options.hasOwnProperty('include')) {
+      queryOptions.include = ParseObject.handleIncludeOptions(options);
+    }
     return CoreManager.getObjectController().fetch(
       list,
       true,
       queryOptions
-    )._thenRunCallbacks(options);
+    );
+  }
+
+  /**
+   * Fetches the given list of Parse.Object.
+   *
+   * Includes nested Parse.Objects for the provided key. You can use dot
+   * notation to specify which fields in the included object are also fetched.
+   *
+   * If any error is encountered, stops and calls the error handler.
+   *
+   * <pre>
+   *   Parse.Object.fetchAllWithInclude([object1, object2, ...], [pointer1, pointer2, ...])
+   *    .then((list) => {
+   *      // All the objects were fetched.
+   *    }, (error) => {
+   *      // An error occurred while fetching one of the objects.
+   *    });
+   * </pre>
+   *
+   * @param {Array} list A list of <code>Parse.Object</code>.
+   * @param {String|Array<string|Array<string>>} keys The name(s) of the key(s) to include.
+   * @param {Object} options
+   * Valid options are:<ul>
+   *   <li>useMasterKey: In Cloud Code and Node only, causes the Master Key to
+   *     be used for this request.
+   *   <li>sessionToken: A valid session token, used for making a request on
+   *       behalf of a specific user.
+   * </ul>
+   * @static
+   */
+  static fetchAllWithInclude(list: Array<ParseObject>, keys: String|Array<string|Array<string>>, options: RequestOptions) {
+    options = options || {};
+    options.include = keys;
+    return ParseObject.fetchAll(list, options);
+  }
+
+  /**
+   * Fetches the given list of Parse.Object if needed.
+   * If any error is encountered, stops and calls the error handler.
+   *
+   * Includes nested Parse.Objects for the provided key. You can use dot
+   * notation to specify which fields in the included object are also fetched.
+   *
+   * If any error is encountered, stops and calls the error handler.
+   *
+   * <pre>
+   *   Parse.Object.fetchAllIfNeededWithInclude([object1, object2, ...], [pointer1, pointer2, ...])
+   *    .then((list) => {
+   *      // All the objects were fetched.
+   *    }, (error) => {
+   *      // An error occurred while fetching one of the objects.
+   *    });
+   * </pre>
+   *
+   * @param {Array} list A list of <code>Parse.Object</code>.
+   * @param {String|Array<string|Array<string>>} keys The name(s) of the key(s) to include.
+   * @param {Object} options
+   * Valid options are:<ul>
+   *   <li>useMasterKey: In Cloud Code and Node only, causes the Master Key to
+   *     be used for this request.
+   *   <li>sessionToken: A valid session token, used for making a request on
+   *       behalf of a specific user.
+   * </ul>
+   * @static
+   */
+  static fetchAllIfNeededWithInclude(list: Array<ParseObject>, keys: String|Array<string|Array<string>>, options: RequestOptions) {
+    options = options || {};
+    options.include = keys;
+    return ParseObject.fetchAllIfNeeded(list, options);
   }
 
   /**
@@ -1221,40 +1544,52 @@ export default class ParseObject {
    * If any error is encountered, stops and calls the error handler.
    *
    * <pre>
-   *   Parse.Object.fetchAllIfNeeded([object1, ...], {
-   *     success: function(list) {
-   *       // Objects were fetched and updated.
-   *     },
-   *     error: function(error) {
-   *       // An error occurred while fetching one of the objects.
-   *     },
-   *   });
+   *   Parse.Object.fetchAllIfNeeded([object1, ...])
+   *    .then((list) => {
+   *      // Objects were fetched and updated.
+   *    }, (error) => {
+   *      // An error occurred while fetching one of the objects.
+   *    });
    * </pre>
    *
-   * @method fetchAllIfNeeded
    * @param {Array} list A list of <code>Parse.Object</code>.
-   * @param {Object} options A Backbone-style callback object.
+   * @param {Object} options
    * @static
-   * Valid options are:<ul>
-   *   <li>success: A Backbone-style success callback.
-   *   <li>error: An Backbone-style error callback.
-   * </ul>
    */
   static fetchAllIfNeeded(list: Array<ParseObject>, options) {
-    var options = options || {};
+    options = options || {};
 
-    var queryOptions = {};
+    const queryOptions = {};
     if (options.hasOwnProperty('useMasterKey')) {
       queryOptions.useMasterKey = options.useMasterKey;
     }
     if (options.hasOwnProperty('sessionToken')) {
       queryOptions.sessionToken = options.sessionToken;
     }
+    if (options.hasOwnProperty('include')) {
+      queryOptions.include = ParseObject.handleIncludeOptions(options);
+    }
     return CoreManager.getObjectController().fetch(
       list,
       false,
       queryOptions
-    )._thenRunCallbacks(options);
+    );
+  }
+
+  static handleIncludeOptions(options) {
+    let include = [];
+    if (Array.isArray(options.include)) {
+      options.include.forEach((key) => {
+        if (Array.isArray(key)) {
+          include = include.concat(key);
+        } else {
+          include.push(key);
+        }
+      });
+    } else {
+      include.push(options.include);
+    }
+    return include;
   }
 
   /**
@@ -1278,57 +1613,53 @@ export default class ParseObject {
    * </ul>
    *
    * <pre>
-   *   Parse.Object.destroyAll([object1, object2, ...], {
-   *     success: function() {
-   *       // All the objects were deleted.
-   *     },
-   *     error: function(error) {
-   *       // An error occurred while deleting one or more of the objects.
-   *       // If this is an aggregate error, then we can inspect each error
-   *       // object individually to determine the reason why a particular
-   *       // object was not deleted.
-   *       if (error.code === Parse.Error.AGGREGATE_ERROR) {
-   *         for (var i = 0; i < error.errors.length; i++) {
-   *           console.log("Couldn't delete " + error.errors[i].object.id +
-   *             "due to " + error.errors[i].message);
-   *         }
-   *       } else {
-   *         console.log("Delete aborted because of " + error.message);
-   *       }
-   *     },
+   *   Parse.Object.destroyAll([object1, object2, ...])
+   *    .then((list) => {
+   *      // All the objects were deleted.
+   *    }, (error) => {
+   *      // An error occurred while deleting one or more of the objects.
+   *      // If this is an aggregate error, then we can inspect each error
+   *      // object individually to determine the reason why a particular
+   *      // object was not deleted.
+   *      if (error.code === Parse.Error.AGGREGATE_ERROR) {
+   *        for (var i = 0; i < error.errors.length; i++) {
+   *          console.log("Couldn't delete " + error.errors[i].object.id +
+   *            "due to " + error.errors[i].message);
+   *        }
+   *      } else {
+   *        console.log("Delete aborted because of " + error.message);
+   *      }
    *   });
    * </pre>
    *
-   * @method destroyAll
    * @param {Array} list A list of <code>Parse.Object</code>.
-   * @param {Object} options A Backbone-style callback object.
+   * @param {Object} options
    * @static
    * Valid options are:<ul>
    *   <li>useMasterKey: In Cloud Code and Node only, causes the Master Key to
    *     be used for this request.
    *   <li>sessionToken: A valid session token, used for making a request on
    *       behalf of a specific user.
+   *   <li>batchSize: Number of objects to process per request
    * </ul>
-   * @return {Parse.Promise} A promise that is fulfilled when the destroyAll
+   * @return {Promise} A promise that is fulfilled when the destroyAll
    *     completes.
    */
-  static destroyAll(list: Array<ParseObject>, options) {
-    var options = options || {};
-
-    var destroyOptions = {};
+  static destroyAll(list: Array<ParseObject>, options = {}) {
+    const destroyOptions = {};
     if (options.hasOwnProperty('useMasterKey')) {
       destroyOptions.useMasterKey = options.useMasterKey;
     }
     if (options.hasOwnProperty('sessionToken')) {
       destroyOptions.sessionToken = options.sessionToken;
     }
-    if (options.hasOwnProperty('batchSize')) {
+    if (options.hasOwnProperty('batchSize') && typeof options.batchSize === 'number') {
       destroyOptions.batchSize = options.batchSize;
     }
     return CoreManager.getObjectController().destroy(
       list,
       destroyOptions
-    )._thenRunCallbacks(options);
+    );
   }
 
   /**
@@ -1336,44 +1667,40 @@ export default class ParseObject {
    * If any error is encountered, stops and calls the error handler.
    *
    * <pre>
-   *   Parse.Object.saveAll([object1, object2, ...], {
-   *     success: function(list) {
+   *   Parse.Object.saveAll([object1, object2, ...])
+   *    .then((list) => {
    *       // All the objects were saved.
-   *     },
-   *     error: function(error) {
+   *    }, (error) => {
    *       // An error occurred while saving one of the objects.
-   *     },
-   *   });
+   *    });
    * </pre>
    *
-   * @method saveAll
    * @param {Array} list A list of <code>Parse.Object</code>.
-   * @param {Object} options A Backbone-style callback object.
+   * @param {Object} options
    * @static
    * Valid options are:<ul>
    *   <li>useMasterKey: In Cloud Code and Node only, causes the Master Key to
    *     be used for this request.
    *   <li>sessionToken: A valid session token, used for making a request on
    *       behalf of a specific user.
+   *   <li>batchSize: Number of objects to process per request
    * </ul>
    */
-  static saveAll(list: Array<ParseObject>, options) {
-    var options = options || {};
-
-    var saveOptions = {};
+  static saveAll(list: Array<ParseObject>, options: RequestOptions = {}) {
+    const saveOptions = {};
     if (options.hasOwnProperty('useMasterKey')) {
       saveOptions.useMasterKey = options.useMasterKey;
     }
     if (options.hasOwnProperty('sessionToken')) {
       saveOptions.sessionToken = options.sessionToken;
     }
-    if (options.hasOwnProperty('batchSize')) {
+    if (options.hasOwnProperty('batchSize') && typeof options.batchSize === 'number') {
       saveOptions.batchSize = options.batchSize;
     }
     return CoreManager.getObjectController().save(
       list,
       saveOptions
-    )._thenRunCallbacks(options);
+    );
   }
 
   /**
@@ -1386,34 +1713,32 @@ export default class ParseObject {
    *  pointerToFoo.id = "myObjectId";
    * </pre>
    *
-   * @method createWithoutData
    * @param {String} id The ID of the object to create a reference to.
    * @static
    * @return {Parse.Object} A Parse.Object reference.
    */
-  static createWithoutData(id) {
-    var obj = new this();
+  static createWithoutData(id: string) {
+    const obj = new this();
     obj.id = id;
     return obj;
   }
 
   /**
    * Creates a new instance of a Parse Object from a JSON representation.
-   * @method fromJSON
    * @param {Object} json The JSON map of the Object's data
    * @param {boolean} override In single instance mode, all old server data
    *   is overwritten if this is set to true
    * @static
    * @return {Parse.Object} A Parse.Object reference
    */
-  static fromJSON(json, override) {
+  static fromJSON(json: any, override?: boolean) {
     if (!json.className) {
       throw new Error('Cannot create an object without a className');
     }
-    var constructor = classMap[json.className];
-    var o = constructor ? new constructor() : new ParseObject(json.className);
-    var otherAttributes = {};
-    for (var attr in json) {
+    const constructor = classMap[json.className];
+    const o = constructor ? new constructor() : new ParseObject(json.className);
+    const otherAttributes = {};
+    for (const attr in json) {
       if (attr !== 'className' && attr !== '__type') {
         otherAttributes[attr] = json[attr];
       }
@@ -1444,11 +1769,10 @@ export default class ParseObject {
    * When objects of that class are retrieved from a query, they will be
    * instantiated with this subclass.
    * This is only necessary when using ES6 subclassing.
-   * @method registerSubclass
    * @param {String} className The class name of the subclass
    * @param {Class} constructor The subclass
    */
-  static registerSubclass(className, constructor) {
+  static registerSubclass(className: string, constructor: any) {
     if (typeof className !== 'string') {
       throw new TypeError('The first argument must be a valid class name.');
     }
@@ -1497,7 +1821,6 @@ export default class ParseObject {
    *         <i>Class properties</i>
    *     });</pre></p>
    *
-   * @method extend
    * @param {String} className The name of the Parse class backing this model.
    * @param {Object} protoProps Instance properties to add to instances of the
    *     class returned from this method.
@@ -1515,19 +1838,19 @@ export default class ParseObject {
         );
       }
     }
-    var adjustedClassName = className;
+    let adjustedClassName = className;
 
     if (adjustedClassName === 'User' && CoreManager.get('PERFORM_USER_REWRITE')) {
       adjustedClassName = '_User';
     }
 
-    var parentProto = ParseObject.prototype;
+    let parentProto = ParseObject.prototype;
     if (this.hasOwnProperty('__super__') && this.__super__) {
       parentProto = this.prototype;
     } else if (classMap[adjustedClassName]) {
       parentProto = classMap[adjustedClassName].prototype;
     }
-    var ParseObjectSubclass = function(attributes, options) {
+    const ParseObjectSubclass = function(attributes, options) {
       this.className = adjustedClassName;
       this._objCount = objectCount++;
       // Enable legacy initializers
@@ -1554,7 +1877,7 @@ export default class ParseObject {
     });
 
     if (protoProps) {
-      for (var prop in protoProps) {
+      for (const prop in protoProps) {
         if (prop !== 'className') {
           Object.defineProperty(ParseObjectSubclass.prototype, prop, {
             value: protoProps[prop],
@@ -1567,7 +1890,7 @@ export default class ParseObject {
     }
 
     if (classProps) {
-      for (var prop in classProps) {
+      for (const prop in classProps) {
         if (prop !== 'className') {
           Object.defineProperty(ParseObjectSubclass, prop, {
             value: classProps[prop],
@@ -1596,7 +1919,7 @@ export default class ParseObject {
    * share the same attributes, and stay synchronized with each other.
    * This is disabled by default in server environments, since it can lead to
    * security issues.
-   * @method enableSingleInstance
+   * @static
    */
   static enableSingleInstance() {
     singleInstance = true;
@@ -1608,26 +1931,157 @@ export default class ParseObject {
    * share the same attributes, and stay synchronized with each other.
    * When disabled, you can have two instances of the same object in memory
    * without them sharing attributes.
-   * @method disableSingleInstance
+   * @static
    */
   static disableSingleInstance() {
     singleInstance = false;
     CoreManager.setObjectStateController(UniqueInstanceStateController);
   }
+
+  /**
+   * Asynchronously stores the objects and every object they point to in the local datastore,
+   * recursively, using a default pin name: _default.
+   *
+   * If those other objects have not been fetched from Parse, they will not be stored.
+   * However, if they have changed data, all the changes will be retained.
+   *
+   * <pre>
+   * await Parse.Object.pinAll([...]);
+   * </pre>
+   *
+   * To retrieve object:
+   * <code>query.fromLocalDatastore()</code> or <code>query.fromPin()</code>
+   *
+   * @param {Array} objects A list of <code>Parse.Object</code>.
+   * @return {Promise} A promise that is fulfilled when the pin completes.
+   * @static
+   */
+  static pinAll(objects: Array<ParseObject>): Promise<void> {
+    const localDatastore = CoreManager.getLocalDatastore();
+    if (!localDatastore.isEnabled) {
+      return Promise.reject('Parse.enableLocalDatastore() must be called first');
+    }
+    return ParseObject.pinAllWithName(DEFAULT_PIN, objects);
+  }
+
+  /**
+   * Asynchronously stores the objects and every object they point to in the local datastore, recursively.
+   *
+   * If those other objects have not been fetched from Parse, they will not be stored.
+   * However, if they have changed data, all the changes will be retained.
+   *
+   * <pre>
+   * await Parse.Object.pinAllWithName(name, [obj1, obj2, ...]);
+   * </pre>
+   *
+   * To retrieve object:
+   * <code>query.fromLocalDatastore()</code> or <code>query.fromPinWithName(name)</code>
+   *
+   * @param {String} name Name of Pin.
+   * @param {Array} objects A list of <code>Parse.Object</code>.
+   * @return {Promise} A promise that is fulfilled when the pin completes.
+   * @static
+   */
+  static pinAllWithName(name: string, objects: Array<ParseObject>): Promise<void> {
+    const localDatastore = CoreManager.getLocalDatastore();
+    if (!localDatastore.isEnabled) {
+      return Promise.reject('Parse.enableLocalDatastore() must be called first');
+    }
+    return localDatastore._handlePinAllWithName(name, objects);
+  }
+
+  /**
+   * Asynchronously removes the objects and every object they point to in the local datastore,
+   * recursively, using a default pin name: _default.
+   *
+   * <pre>
+   * await Parse.Object.unPinAll([...]);
+   * </pre>
+   *
+   * @param {Array} objects A list of <code>Parse.Object</code>.
+   * @return {Promise} A promise that is fulfilled when the unPin completes.
+   * @static
+   */
+  static unPinAll(objects: Array<ParseObject>): Promise<void> {
+    const localDatastore = CoreManager.getLocalDatastore();
+    if (!localDatastore.isEnabled) {
+      return Promise.reject('Parse.enableLocalDatastore() must be called first');
+    }
+    return ParseObject.unPinAllWithName(DEFAULT_PIN, objects);
+  }
+
+  /**
+   * Asynchronously removes the objects and every object they point to in the local datastore, recursively.
+   *
+   * <pre>
+   * await Parse.Object.unPinAllWithName(name, [obj1, obj2, ...]);
+   * </pre>
+   *
+   * @param {String} name Name of Pin.
+   * @param {Array} objects A list of <code>Parse.Object</code>.
+   * @return {Promise} A promise that is fulfilled when the unPin completes.
+   * @static
+   */
+  static unPinAllWithName(name: string, objects: Array<ParseObject>): Promise<void> {
+    const localDatastore = CoreManager.getLocalDatastore();
+    if (!localDatastore.isEnabled) {
+      return Promise.reject('Parse.enableLocalDatastore() must be called first');
+    }
+    return localDatastore._handleUnPinAllWithName(name, objects);
+  }
+
+  /**
+   * Asynchronously removes all objects in the local datastore using a default pin name: _default.
+   *
+   * <pre>
+   * await Parse.Object.unPinAllObjects();
+   * </pre>
+   *
+   * @return {Promise} A promise that is fulfilled when the unPin completes.
+   * @static
+   */
+  static unPinAllObjects(): Promise<void> {
+    const localDatastore = CoreManager.getLocalDatastore();
+    if (!localDatastore.isEnabled) {
+      return Promise.reject('Parse.enableLocalDatastore() must be called first');
+    }
+    return localDatastore.unPinWithName(DEFAULT_PIN);
+  }
+
+  /**
+   * Asynchronously removes all objects with the specified pin name.
+   * Deletes the pin name also.
+   *
+   * <pre>
+   * await Parse.Object.unPinAllObjectsWithName(name);
+   * </pre>
+   *
+   * @param {String} name Name of Pin.
+   * @return {Promise} A promise that is fulfilled when the unPin completes.
+   * @static
+   */
+  static unPinAllObjectsWithName(name: string): Promise<void> {
+    const localDatastore = CoreManager.getLocalDatastore();
+    if (!localDatastore.isEnabled) {
+      return Promise.reject('Parse.enableLocalDatastore() must be called first');
+    }
+    return localDatastore.unPinWithName(PIN_PREFIX + name);
+  }
 }
 
-var DefaultController = {
-  fetch(target: ParseObject | Array<ParseObject>, forceFetch: boolean, options: RequestOptions): ParsePromise {
+const DefaultController = {
+  fetch(target: ParseObject | Array<ParseObject>, forceFetch: boolean, options: RequestOptions): Promise<Array<void> | ParseObject> {
+    const localDatastore = CoreManager.getLocalDatastore();
     if (Array.isArray(target)) {
       if (target.length < 1) {
-        return ParsePromise.as([]);
+        return Promise.resolve([]);
       }
-      var objs = [];
-      var ids = [];
-      var className = null;
-      var results = [];
-      var error = null;
-      target.forEach((el, i) => {
+      const objs = [];
+      const ids = [];
+      let className = null;
+      const results = [];
+      let error = null;
+      target.forEach((el) => {
         if (error) {
           return;
         }
@@ -1646,28 +2100,31 @@ var DefaultController = {
             'All objects must have an ID'
           );
         }
-        if (forceFetch || Object.keys(el._getServerData()).length === 0) {
+        if (forceFetch || !el.isDataAvailable()) {
           ids.push(el.id);
           objs.push(el);
         }
         results.push(el);
       });
       if (error) {
-        return ParsePromise.error(error);
+        return Promise.reject(error);
       }
-      var query = new ParseQuery(className);
+      const query = new ParseQuery(className);
       query.containedIn('objectId', ids);
+      if (options && options.include) {
+        query.include(options.include);
+      }
       query._limit = ids.length;
-      return query.find(options).then((objects) => {
-        var idMap = {};
+      return query.find(options).then(async (objects) => {
+        const idMap = {};
         objects.forEach((o) => {
           idMap[o.id] = o;
         });
-        for (var i = 0; i < objs.length; i++) {
-          var obj = objs[i];
+        for (let i = 0; i < objs.length; i++) {
+          const obj = objs[i];
           if (!obj || !obj.id || !idMap[obj.id]) {
             if (forceFetch) {
-              return ParsePromise.error(
+              return Promise.reject(
                 new ParseError(
                   ParseError.OBJECT_NOT_FOUND,
                   'All objects must exist on the server.'
@@ -1678,49 +2135,65 @@ var DefaultController = {
         }
         if (!singleInstance) {
           // If single instance objects are disabled, we need to replace the
-          for (var i = 0; i < results.length; i++) {
-            var obj = results[i];
+          for (let i = 0; i < results.length; i++) {
+            const obj = results[i];
             if (obj && obj.id && idMap[obj.id]) {
-              var id = obj.id;
+              const id = obj.id;
               obj._finishFetch(idMap[id].toJSON());
               results[i] = idMap[id];
             }
           }
         }
-        return ParsePromise.as(results);
+        for (const object of results) {
+          await localDatastore._updateObjectIfPinned(object);
+        }
+        return Promise.resolve(results);
       });
     } else {
-      var RESTController = CoreManager.getRESTController();
+      if (!target.id) {
+        return Promise.reject(new ParseError(
+          ParseError.MISSING_OBJECT_ID,
+          'Object does not have an ID'
+        ));
+      }
+      const RESTController = CoreManager.getRESTController();
+      const params = {};
+      if (options && options.include) {
+        params.include = options.include.join();
+      }
       return RESTController.request(
         'GET',
         'classes/' + target.className + '/' + target._getId(),
-        {},
+        params,
         options
-      ).then((response, status, xhr) => {
+      ).then(async (response) => {
         if (target instanceof ParseObject) {
           target._clearPendingOps();
           target._clearServerData();
           target._finishFetch(response);
         }
+        await localDatastore._updateObjectIfPinned(target);
         return target;
       });
     }
   },
 
-  destroy(target: ParseObject | Array<ParseObject>, options: RequestOptions): ParsePromise {
-    var RESTController = CoreManager.getRESTController();
-    var batchSize = options.batchSize || 20;
+  async destroy(target: ParseObject | Array<ParseObject>, options: RequestOptions): Promise<Array<void> | ParseObject> {
+    const batchSize = (options && options.batchSize) ? options.batchSize : CoreManager.get('REQUEST_BATCH_SIZE');
+    const localDatastore = CoreManager.getLocalDatastore();
+
+    const RESTController = CoreManager.getRESTController();
     if (Array.isArray(target)) {
       if (target.length < 1) {
-        return ParsePromise.as([]);
+        return Promise.resolve([]);
       }
-      var batches = [[]];
+      const batches = [[]];
       target.forEach((obj) => {
         if (!obj.id) {
           return;
         }
         batches[batches.length - 1].push(obj);
-        if (batches[batches.length - 1].length >= 20) {
+        if (batches[batches.length - 1].length >= batchSize) {
           batches.push([]);
         }
       });
@@ -1728,8 +2201,8 @@ var DefaultController = {
         // If the last batch is empty, remove it
         batches.pop();
       }
-      var deleteCompleted = ParsePromise.as();
-      var errors = [];
+      let deleteCompleted = Promise.resolve();
+      const errors = [];
       batches.forEach((batch) => {
         deleteCompleted = deleteCompleted.then(() => {
           return RESTController.request('POST', 'batch', {
@@ -1741,10 +2214,9 @@ var DefaultController = {
               };
             })
           }, options).then((results) => {
-            var error = null;
-            for (var i = 0; i < results.length; i++) {
+            for (let i = 0; i < results.length; i++) {
               if (results[i] && results[i].hasOwnProperty('error')) {
-                var err = new ParseError(
+                const err = new ParseError(
                   results[i].error.code,
                   results[i].error.error
                 );
@@ -1755,13 +2227,16 @@ var DefaultController = {
           });
         });
       });
-      return deleteCompleted.then(() => {
+      return deleteCompleted.then(async () => {
         if (errors.length) {
-          var aggregate = new ParseError(ParseError.AGGREGATE_ERROR);
+          const aggregate = new ParseError(ParseError.AGGREGATE_ERROR);
           aggregate.errors = errors;
-          return ParsePromise.error(aggregate);
+          return Promise.reject(aggregate);
         }
-        return ParsePromise.as(target);
+        for (const object of target) {
+          await localDatastore._destroyObjectIfPinned(object);
+        }
+        return Promise.resolve(target);
       });
     } else if (target instanceof ParseObject) {
       return RESTController.request(
@@ -1769,49 +2244,55 @@ var DefaultController = {
         'classes/' + target.className + '/' + target._getId(),
         {},
         options
-      ).then(() => {
-        return ParsePromise.as(target);
+      ).then(async () => {
+        await localDatastore._destroyObjectIfPinned(target);
+        return Promise.resolve(target);
       });
     }
-    return ParsePromise.as(target);
+    await localDatastore._destroyObjectIfPinned(target);
+    return Promise.resolve(target);
   },
 
   save(target: ParseObject | Array<ParseObject | ParseFile>, options: RequestOptions) {
-    var RESTController = CoreManager.getRESTController();
-    var batchSize = options.batchSize || 20;
-    var stateController = CoreManager.getObjectStateController();
+    const batchSize = (options && options.batchSize) ? options.batchSize : CoreManager.get('REQUEST_BATCH_SIZE');
+    const localDatastore = CoreManager.getLocalDatastore();
+    const mapIdForPin = {};
+
+    const RESTController = CoreManager.getRESTController();
+    const stateController = CoreManager.getObjectStateController();
+
+    options = options || {};
+    options.returnStatus = options.returnStatus || true;
     if (Array.isArray(target)) {
       if (target.length < 1) {
-        return ParsePromise.as([]);
+        return Promise.resolve([]);
       }
 
-      var unsaved = target.concat();
-      for (var i = 0; i < target.length; i++) {
+      let unsaved = target.concat();
+      for (let i = 0; i < target.length; i++) {
         if (target[i] instanceof ParseObject) {
           unsaved = unsaved.concat(unsavedChildren(target[i], true));
         }
       }
       unsaved = unique(unsaved);
 
-      var filesSaved = ParsePromise.as();
-      var pending: Array<ParseObject> = [];
+      const filesSaved: Array<ParseFile> = [];
+      let pending: Array<ParseObject> = [];
       unsaved.forEach((el) => {
         if (el instanceof ParseFile) {
-          filesSaved = filesSaved.then(() => {
-            return el.save();
-          });
+          filesSaved.push(el.save(options));
         } else if (el instanceof ParseObject) {
           pending.push(el);
         }
       });
 
-      return filesSaved.then(() => {
-        var objectError = null;
-        return ParsePromise._continueWhile(() => {
+      return Promise.all(filesSaved).then(() => {
+        let objectError = null;
+        return continueWhile(() => {
           return pending.length > 0;
         }, () => {
-          var batch = [];
-          var nextPending = [];
+          const batch = [];
+          const nextPending = [];
           pending.forEach((el) => {
             if (batch.length < batchSize && canBeSerialized(el)) {
               batch.push(el);
@@ -1821,7 +2302,7 @@ var DefaultController = {
           });
           pending = nextPending;
           if (batch.length < 1) {
-            return ParsePromise.error(
+            return Promise.reject(
               new ParseError(
                 ParseError.OTHER_CAUSE,
                 'Tried to save a batch with a cycle.'
@@ -1831,20 +2312,24 @@ var DefaultController = {
 
           // Queue up tasks for each object in the batch.
           // When every task is ready, the API request will execute
-          var batchReturned = new ParsePromise();
-          var batchReady = [];
-          var batchTasks = [];
+          const batchReturned = new resolvingPromise();
+          const batchReady = [];
+          const batchTasks = [];
           batch.forEach((obj, index) => {
-            var ready = new ParsePromise();
+            const ready = new resolvingPromise();
             batchReady.push(ready);
-            var task = function() {
+            const task = function() {
               ready.resolve();
-              return batchReturned.then((responses, status) => {
+              return batchReturned.then((responses) => {
                 if (responses[index].hasOwnProperty('success')) {
+                  const objectId = responses[index].success.objectId;
+                  const status = responses[index]._status;
+                  delete responses[index]._status;
+                  mapIdForPin[objectId] = obj._localId;
                   obj._handleSaveResponse(responses[index].success, status);
                 } else {
                   if (!objectError && responses[index].hasOwnProperty('error')) {
-                    var serverError = responses[index].error;
+                    const serverError = responses[index].error;
                     objectError = new ParseError(serverError.code, serverError.error);
                     // Cancel the rest of the save
                     pending = [];
@@ -1857,55 +2342,68 @@ var DefaultController = {
             batchTasks.push(stateController.enqueueTask(obj._getStateIdentifier(), task));
           });
 
-          ParsePromise.when(batchReady).then(() => {
+          when(batchReady).then(() => {
             // Kick off the batch request
             return RESTController.request('POST', 'batch', {
               requests: batch.map((obj) => {
-                var params = obj._getSaveParams();
+                const params = obj._getSaveParams();
                 params.path = getServerUrlPath() + params.path;
                 return params;
               })
             }, options);
-          }).then((response, status, xhr) => {
-            batchReturned.resolve(response, status);
+          }).then(batchReturned.resolve, (error) => {
+            batchReturned.reject(new ParseError(ParseError.INCORRECT_TYPE, error.message));
           });
 
-          return ParsePromise.when(batchTasks);
-        }).then(() => {
+          return when(batchTasks);
+        }).then(async () => {
           if (objectError) {
-            return ParsePromise.error(objectError);
+            return Promise.reject(objectError);
           }
-          return ParsePromise.as(target);
+          for (const object of target) {
+            await localDatastore._updateLocalIdForObject(mapIdForPin[object.id], object);
+            await localDatastore._updateObjectIfPinned(object);
+          }
+          return Promise.resolve(target);
         });
       });
 
     } else if (target instanceof ParseObject) {
+      // generate _localId in case if cascadeSave=false
+      target._getId();
+      const localId = target._localId;
       // copying target lets Flow guarantee the pointer isn't modified elsewhere
-      var targetCopy = target;
-      var task = function() {
-        var params = targetCopy._getSaveParams();
+      const targetCopy = target;
+      const task = function() {
+        const params = targetCopy._getSaveParams();
         return RESTController.request(
           params.method,
           params.path,
           params.body,
           options
-        ).then((response, status) => {
+        ).then((response) => {
+          const status = response._status;
+          delete response._status;
           targetCopy._handleSaveResponse(response, status);
         }, (error) => {
           targetCopy._handleSaveError();
-          return ParsePromise.error(error);
+          return Promise.reject(error);
         });
       }
 
       stateController.pushPendingState(target._getStateIdentifier());
-      return stateController.enqueueTask(target._getStateIdentifier(), task).then(() => {
+      return stateController.enqueueTask(target._getStateIdentifier(), task).then(async () => {
+        await localDatastore._updateLocalIdForObject(localId, target);
+        await localDatastore._updateObjectIfPinned(target);
         return target;
       }, (error) => {
-        return ParsePromise.error(error);
+        return Promise.reject(error);
       });
     }
-    return ParsePromise.as();
+    return Promise.resolve();
   }
 }
 
 CoreManager.setObjectController(DefaultController);
+
+export default ParseObject;

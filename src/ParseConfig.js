@@ -14,18 +14,18 @@ import decode from './decode';
 import encode from './encode';
 import escape from './escape';
 import ParseError from './ParseError';
-import ParsePromise from './ParsePromise';
 import Storage from './Storage';
+
+import type { RequestOptions } from './RESTController';
 
 /**
  * Parse.Config is a local representation of configuration data that
  * can be set from the Parse dashboard.
  *
- * @class Parse.Config
- * @constructor
+ * @alias Parse.Config
  */
 
-export default class ParseConfig {
+class ParseConfig {
   attributes: { [key: string]: any };
   _escapedAttributes: { [key: string]: any };
 
@@ -36,7 +36,6 @@ export default class ParseConfig {
 
   /**
    * Gets the value of an attribute.
-   * @method get
    * @param {String} attr The name of an attribute.
    */
   get(attr: string): any {
@@ -45,16 +44,15 @@ export default class ParseConfig {
 
   /**
    * Gets the HTML-escaped value of an attribute.
-   * @method escape
    * @param {String} attr The name of an attribute.
    */
   escape(attr: string): string {
-    var html = this._escapedAttributes[attr];
+    const html = this._escapedAttributes[attr];
     if (html) {
       return html;
     }
-    var val = this.attributes[attr];
-    var escaped = '';
+    const val = this.attributes[attr];
+    let escaped = '';
     if (val != null) {
       escaped = escape(val.toString());
     }
@@ -66,43 +64,61 @@ export default class ParseConfig {
    * Retrieves the most recently-fetched configuration object, either from
    * memory or from local storage if necessary.
    *
-   * @method current
    * @static
    * @return {Config} The most recently-fetched Parse.Config if it
    *     exists, else an empty Parse.Config.
    */
   static current() {
-    var controller = CoreManager.getConfigController();
+    const controller = CoreManager.getConfigController();
     return controller.current();
   }
 
   /**
    * Gets a new configuration object from the server.
-   * @method get
    * @static
-   * @param {Object} options A Backbone-style options object.
+   * @param {Object} options
    * Valid options are:<ul>
-   *   <li>success: Function to call when the get completes successfully.
-   *   <li>error: Function to call when the get fails.
+   *   <li>useMasterKey: In Cloud Code and Node only, causes the Master Key to
+   *     be used for this request.
    * </ul>
-   * @return {Parse.Promise} A promise that is resolved with a newly-created
+   * @return {Promise} A promise that is resolved with a newly-created
    *     configuration object when the get completes.
    */
-  static get(options) {
-    options = options || {};
+  static get(options: RequestOptions = {}) {
+    const controller = CoreManager.getConfigController();
+    return controller.get(options);
+  }
 
-    var controller = CoreManager.getConfigController();
-    return controller.get()._thenRunCallbacks(options);
+  /**
+   * Save value keys to the server.
+   * @static
+   * @param {Object} attrs The config parameters and values.
+   * @param {Object} masterKeyOnlyFlags The flags that define whether config parameters listed
+   * in `attrs` should be retrievable only by using the master key.
+   * For example: `param1: true` makes `param1` only retrievable by using the master key.
+   * If a parameter is not provided or set to `false`, it can be retrieved without
+   * using the master key.
+   * @return {Promise} A promise that is resolved with a newly-created
+   *     configuration object or with the current with the update.
+   */
+  static save(attrs: { [key: string]: any }, masterKeyOnlyFlags: { [key: string]: any }) {
+    const controller = CoreManager.getConfigController();
+    //To avoid a mismatch with the local and the cloud config we get a new version
+    return controller.save(attrs, masterKeyOnlyFlags).then(() => {
+      return controller.get({ useMasterKey: true });
+    },(error) => {
+      return Promise.reject(error);
+    });
   }
 }
 
-var currentConfig = null;
+let currentConfig = null;
 
-var CURRENT_CONFIG_KEY = 'currentConfig';
+const CURRENT_CONFIG_KEY = 'currentConfig';
 
 function decodePayload(data) {
   try {
-    var json = JSON.parse(data);
+    const json = JSON.parse(data);
     if (json && typeof json === 'object') {
       return decode(json);
     }
@@ -111,20 +127,20 @@ function decodePayload(data) {
   }
 }
 
-var DefaultController = {
+const DefaultController = {
   current() {
     if (currentConfig) {
       return currentConfig;
     }
 
-    var config = new ParseConfig();
-    var storagePath = Storage.generatePath(CURRENT_CONFIG_KEY);
-    var configData;
+    const config = new ParseConfig();
+    const storagePath = Storage.generatePath(CURRENT_CONFIG_KEY);
+    let configData;
     if (!Storage.async()) {
       configData = Storage.getItem(storagePath);
 
       if (configData) {
-        var attributes = decodePayload(configData);
+        const attributes = decodePayload(configData);
         if (attributes) {
           config.attributes = attributes;
           currentConfig = config;
@@ -135,7 +151,7 @@ var DefaultController = {
     // Return a promise for async storage controllers
     return Storage.getItemAsync(storagePath).then((configData) => {
       if (configData) {
-        var attributes = decodePayload(configData);
+        const attributes = decodePayload(configData);
         if (attributes) {
           config.attributes = attributes;
           currentConfig = config;
@@ -145,23 +161,23 @@ var DefaultController = {
     });
   },
 
-  get() {
-    var RESTController = CoreManager.getRESTController();
+  get(options: RequestOptions = {}) {
+    const RESTController = CoreManager.getRESTController();
 
     return RESTController.request(
-      'GET', 'config', {}, {}
+      'GET', 'config', {}, options
     ).then((response) => {
       if (!response || !response.params) {
-        var error = new ParseError(
+        const error = new ParseError(
           ParseError.INVALID_JSON,
           'Config JSON response invalid.'
         );
-        return ParsePromise.error(error);
+        return Promise.reject(error);
       }
 
-      var config = new ParseConfig();
+      const config = new ParseConfig();
       config.attributes = {};
-      for (var attr in response.params) {
+      for (const attr in response.params) {
         config.attributes[attr] = decode(response.params[attr]);
       }
       currentConfig = config;
@@ -172,7 +188,33 @@ var DefaultController = {
         return config;
       });
     });
+  },
+
+  save(attrs: { [key: string]: any }, masterKeyOnlyFlags: { [key: string]: any }) {
+    const RESTController = CoreManager.getRESTController();
+    const encodedAttrs = {};
+    for(const key in attrs){
+      encodedAttrs[key] = encode(attrs[key])
+    }
+    return RESTController.request(
+      'PUT',
+      'config',
+      { params: encodedAttrs, masterKeyOnly: masterKeyOnlyFlags },
+      { useMasterKey: true }
+    ).then(response => {
+      if(response && response.result){
+        return Promise.resolve()
+      } else {
+        const error = new ParseError(
+          ParseError.INTERNAL_SERVER_ERROR,
+          'Error occured updating Config.'
+        );
+        return Promise.reject(error)
+      }
+    })
   }
 };
 
 CoreManager.setConfigController(DefaultController);
+
+export default ParseConfig;

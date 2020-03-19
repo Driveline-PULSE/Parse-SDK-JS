@@ -1,4 +1,4 @@
-/**
+/*
  * Copyright (c) 2015-present, Parse, LLC.
  * All rights reserved.
  *
@@ -9,7 +9,7 @@
  * @flow
  */
 
-var encoded = {
+const encoded = {
   '&': '&amp;',
   '<': '&lt;',
   '>': '&gt;',

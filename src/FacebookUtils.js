@@ -8,16 +8,13 @@
  *
  * @flow-weak
  */
-
-import parseDate from './parseDate';
+/* global FB */
 import ParseUser from './ParseUser';
 
-var PUBLIC_KEY = "*";
-
-var initialized = false;
-var requestedPermissions;
-var initOptions;
-var provider = {
+let initialized = false;
+let requestedPermissions;
+let initOptions;
+const provider = {
   authenticate(options) {
     if (typeof FB === 'undefined') {
       options.error(this, 'Facebook SDK not found.');
@@ -44,24 +41,12 @@ var provider = {
 
   restoreAuthentication(authData) {
     if (authData) {
-      var expiration = parseDate(authData.expiration_date);
-      var expiresIn = expiration ?
-        (expiration.getTime() - new Date().getTime()) / 1000 :
-        0;
-
-      var authResponse = {
-        userID: authData.id,
-        accessToken: authData.access_token,
-        expiresIn: expiresIn
-      };
-      var newOptions = {};
+      const newOptions = {};
       if (initOptions) {
-        for (var key in initOptions) {
+        for (const key in initOptions) {
           newOptions[key] = initOptions[key];
         }
       }
-      newOptions.authResponse = authResponse;
-
       // Suppress checks for login status from the browser.
       newOptions.status = false;
 
@@ -69,9 +54,9 @@ var provider = {
       // Most of the time, the users will match -- it's only in cases where
       // the FB SDK knows of a different user than the one being restored
       // from a Parse User that logged in with username/password.
-      var existingResponse = FB.getAuthResponse();
+      const existingResponse = FB.getAuthResponse();
       if (existingResponse &&
-          existingResponse.userID !== authResponse.userID) {
+          existingResponse.userID !== authData.id) {
         FB.logout();
       }
 
@@ -93,8 +78,9 @@ var provider = {
  * Provides a set of utilities for using Parse with Facebook.
  * @class Parse.FacebookUtils
  * @static
+ * @hideconstructor
  */
-var FacebookUtils = {
+const FacebookUtils = {
   /**
    * Initializes Parse Facebook integration.  Call this function after you
    * have loaded the Facebook Javascript SDK with the same parameters
@@ -105,6 +91,7 @@ var FacebookUtils = {
    * with these arguments.
    *
    * @method init
+   * @name Parse.FacebookUtils.init
    * @param {Object} options Facebook options argument as described here:
    *   <a href=
    *   "https://developers.facebook.com/docs/reference/javascript/FB.init/">
@@ -120,12 +107,12 @@ var FacebookUtils = {
     }
     initOptions = {};
     if (options) {
-      for (var key in options) {
+      for (const key in options) {
         initOptions[key] = options[key];
       }
     }
     if (initOptions.status && typeof console !== 'undefined') {
-      var warn = console.warn || console.log || function() {};
+      const warn = console.warn || console.log || function() {}; // eslint-disable-line no-console
       warn.call(console, 'The "status" flag passed into' +
         ' FB.init, when set to true, can interfere with Parse Facebook' +
         ' integration, so it has been suppressed. Please call' +
@@ -141,6 +128,7 @@ var FacebookUtils = {
    * Gets whether the user has their account linked to Facebook.
    *
    * @method isLinked
+   * @name Parse.FacebookUtils.isLinked
    * @param {Parse.User} user User to check for a facebook link.
    *     The user must be logged in on this device.
    * @return {Boolean} <code>true</code> if the user has their account
@@ -155,14 +143,24 @@ var FacebookUtils = {
    * SDK to authenticate the user, and then automatically logs in (or
    * creates, in the case where it is a new user) a Parse.User.
    *
+   * Standard API:
+   *
+   * <code>logIn(permission: string, authData: Object);</code>
+   *
+   * Advanced API: Used for handling your own oAuth tokens
+   * {@link https://docs.parseplatform.org/rest/guide/#linking-users}
+   *
+   * <code>logIn(authData: Object, options?: Object);</code>
+   *
    * @method logIn
-   * @param {String, Object} permissions The permissions required for Facebook
+   * @name Parse.FacebookUtils.logIn
+   * @param {(String|Object)} permissions The permissions required for Facebook
    *    log in.  This is a comma-separated string of permissions.
    *    Alternatively, supply a Facebook authData object as described in our
    *    REST API docs if you want to handle getting facebook auth tokens
    *    yourself.
-   * @param {Object} options Standard options object with success and error
-   *    callbacks.
+   * @param {Object} options MasterKey / SessionToken. Alternatively can be used for authData if permissions is a string
+   * @returns {Promise}
    */
   logIn(permissions, options) {
     if (!permissions || typeof permissions === 'string') {
@@ -172,17 +170,10 @@ var FacebookUtils = {
         );
       }
       requestedPermissions = permissions;
-      return ParseUser._logInWith('facebook', options);
-    } else {
-      var newOptions = {};
-      if (options) {
-        for (var key in options) {
-          newOptions[key] = options[key];
-        }
-      }
-      newOptions.authData = permissions;
-      return ParseUser._logInWith('facebook', newOptions);
+      return ParseUser.logInWith('facebook', options);
     }
+    const authData = { authData: permissions };
+    return ParseUser.logInWith('facebook', authData, options);
   },
 
   /**
@@ -190,16 +181,26 @@ var FacebookUtils = {
    * Facebook SDK to authenticate the user, and then automatically links
    * the account to the Parse.User.
    *
+   * Standard API:
+   *
+   * <code>link(user: Parse.User, permission: string, authData?: Object);</code>
+   *
+   * Advanced API: Used for handling your own oAuth tokens
+   * {@link https://docs.parseplatform.org/rest/guide/#linking-users}
+   *
+   * <code>link(user: Parse.User, authData: Object, options?: FullOptions);</code>
+   *
    * @method link
+   * @name Parse.FacebookUtils.link
    * @param {Parse.User} user User to link to Facebook. This must be the
    *     current user.
-   * @param {String, Object} permissions The permissions required for Facebook
+   * @param {(String|Object)} permissions The permissions required for Facebook
    *    log in.  This is a comma-separated string of permissions.
    *    Alternatively, supply a Facebook authData object as described in our
    *    REST API docs if you want to handle getting facebook auth tokens
    *    yourself.
-   * @param {Object} options Standard options object with success and error
-   *    callbacks.
+   * @param {Object} options MasterKey / SessionToken. Alternatively can be used for authData if permissions is a string
+   * @returns {Promise}
    */
   link(user, permissions, options) {
     if (!permissions || typeof permissions === 'string') {
@@ -209,27 +210,22 @@ var FacebookUtils = {
         );
       }
       requestedPermissions = permissions;
-      return user._linkWith('facebook', options);
-    } else {
-      var newOptions = {};
-      if (options) {
-        for (var key in options) {
-          newOptions[key] = options[key];
-        }
-      }
-      newOptions.authData = permissions;
-      return user._linkWith('facebook', newOptions);
+      return user.linkWith('facebook', options);
     }
+    const authData = { authData: permissions };
+    return user.linkWith('facebook', authData, options);
   },
 
   /**
    * Unlinks the Parse.User from a Facebook account.
    *
    * @method unlink
+   * @name Parse.FacebookUtils.unlink
    * @param {Parse.User} user User to unlink from Facebook. This must be the
    *     current user.
    * @param {Object} options Standard options object with success and error
    *    callbacks.
+   * @returns {Promise}
    */
   unlink: function(user, options) {
     if (!initialized) {
@@ -238,6 +234,11 @@ var FacebookUtils = {
       );
     }
     return user._unlinkFrom('facebook', options);
+  },
+
+  // Used for testing purposes
+  _getAuthProvider() {
+    return provider;
   }
 };
 

@@ -9,13 +9,16 @@
 
 jest.dontMock('../CoreManager');
 jest.dontMock('../InstallationController');
-jest.dontMock('../ParsePromise');
 jest.dontMock('../Storage');
 jest.dontMock('../StorageController.default');
+jest.mock('uuid/v4', () => {
+  let value = 0;
+  return () => value++ + '';
+});
 
-var CoreManager = require('../CoreManager');
-var InstallationController = require('../InstallationController');
-var Storage = require('../Storage');
+const CoreManager = require('../CoreManager');
+const InstallationController = require('../InstallationController');
+const Storage = require('../Storage');
 
 describe('InstallationController', () => {
   beforeEach(() => {
@@ -34,7 +37,7 @@ describe('InstallationController', () => {
   });
 
   it('caches the installation id', (done) => {
-    var iid = null;
+    let iid = null;
     InstallationController.currentInstallationId().then((i) => {
       iid = i;
       Storage._clear();
@@ -46,7 +49,7 @@ describe('InstallationController', () => {
   });
 
   it('permanently stores the installation id', (done) => {
-    var iid = null;
+    let iid = null;
     InstallationController.currentInstallationId().then((i) => {
       iid = i;
       InstallationController._clearCache();

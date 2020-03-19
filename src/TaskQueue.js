@@ -8,12 +8,11 @@
  *
  * @flow
  */
-
-import ParsePromise from './ParsePromise';
+import { resolvingPromise } from './promiseUtils';
 
 type Task = {
-  task: () => ParsePromise;
-  _completion: ParsePromise
+  task: () => Promise;
+  _completion: Promise
 };
 
 class TaskQueue {
@@ -23,8 +22,8 @@ class TaskQueue {
     this.queue = [];
   }
 
-  enqueue(task: () => ParsePromise): ParsePromise {
-    var taskComplete = new ParsePromise();
+  enqueue(task: () => Promise): Promise {
+    const taskComplete = new resolvingPromise();
     this.queue.push({
       task: task,
       _completion: taskComplete
@@ -44,7 +43,7 @@ class TaskQueue {
   _dequeue() {
     this.queue.shift();
     if (this.queue.length) {
-      var next = this.queue[0];
+      const next = this.queue[0];
       next.task().then(() => {
         this._dequeue();
         next._completion.resolve();
