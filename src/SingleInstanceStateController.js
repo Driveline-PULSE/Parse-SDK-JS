@@ -118,7 +118,7 @@ export function estimateAttribute(obj: ObjectIdentifier, attr: string): mixed {
   );
 }
 
-export function estimateAttributes(obj: ObjectIdentifier): AttributeMap {
+export function estimateAttributes(obj: ObjectIdentifier, attributes: Array<string>): AttributeMap {
   const serverData = getServerData(obj);
   const pendingOps = getPendingOps(obj);
   return ObjectStateMutations.estimateAttributes(serverData, pendingOps, obj.className, obj.id);

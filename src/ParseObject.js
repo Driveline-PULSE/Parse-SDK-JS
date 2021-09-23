@@ -162,6 +162,22 @@ class ParseObject {
     return Object.freeze(stateController.estimateAttributes(this._getStateIdentifier()));
   }
 
+  _getAttributes(attributes: Array<string>): AttributeMap {
+    const result = {};
+
+    const stateController = CoreManager.getObjectStateController();
+    const stateIdentifier = this._getStateIdentifier();
+    attributes.forEach((attr) => {
+      result[attr] = stateController.estimateAttribute(stateIdentifier, attr);
+    })
+    
+    return Object.freeze(result);
+  }
+
+  _getAttribute(attr: string): any {
+    let stateController = CoreManager.getObjectStateController();
+    return stateController.estimateAttribute(this._getStateIdentifier(), attr);
+  }
   /**
    * The first time this object was saved on the server.
    *
@@ -610,7 +626,7 @@ class ParseObject {
    * @returns {*}
    */
   get(attr: string): mixed {
-    return this.attributes[attr];
+    return this._getAttribute(attr);
   }
 
   /**
